@@ -16,6 +16,10 @@ hold fn ──► mic (16kHz, always warm) ──► whisper.cpp base.en + Metal
 
 **~600ms from silence to pasted text** — competitive with Wispr's own published 700ms cloud budget, with no network hop and no account.
 
+![Simo Flow dashboard — history feed](docs/dashboard-home.png)
+
+![Simo Flow dashboard — insights](docs/dashboard-insights.png)
+
 ## Features
 
 - 🎙 **Push-to-talk**: hold `fn`, speak, release

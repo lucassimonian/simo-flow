@@ -46,11 +46,11 @@ def history(limit: int = 100, q: str = "") -> list[dict]:
         c.row_factory = sqlite3.Row
         if q:
             rows = c.execute(
-                "SELECT * FROM history WHERE polished_text LIKE ? ORDER BY id DESC LIMIT ?",
+                "SELECT * FROM history WHERE polished_text LIKE ? ORDER BY ts DESC LIMIT ?",
                 (f"%{q}%", limit),
             )
         else:
-            rows = c.execute("SELECT * FROM history ORDER BY id DESC LIMIT ?", (limit,))
+            rows = c.execute("SELECT * FROM history ORDER BY ts DESC LIMIT ?", (limit,))
         return [dict(r) for r in rows]
 
 

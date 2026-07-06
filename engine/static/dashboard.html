@@ -228,6 +228,8 @@ async function delTerm(id) {
 
 /* boot */
 $('#greet').textContent = 'Welcome back, ' + (localStorage.name || 'Lucas');
+const hash = location.hash.slice(1);                         // deep links: /#insights etc.
+if (hash) document.querySelector(`nav a[data-p="${hash}"]`)?.click();
 loadFeed(); loadMini(); loadDict();
 setInterval(() => { loadFeed($('#q').value); loadMini(); }, 5000);   // live-ish feed
 </script>
