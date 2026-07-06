@@ -33,7 +33,7 @@ brew install whisper-cpp ollama portaudio ffmpeg
 brew services start ollama
 ollama pull qwen2.5:3b-instruct
 
-git clone https://github.com/YOURUSER/simo-flow && cd simo-flow
+git clone https://github.com/lucassimonian/simo-flow && cd simo-flow
 python3.11 -m venv .venv
 ./.venv/bin/pip install sounddevice numpy pyobjc requests rumps fastapi uvicorn pydantic
 
