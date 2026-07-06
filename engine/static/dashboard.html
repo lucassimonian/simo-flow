@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simo Flow</title>
+<style>
+  :root {
+    --bg: #f7f5f1;
+    --surface: #fdfcfa;
+    --card: #ffffff;
+    --line: #e9e4db;
+    --text: #1c1b18;
+    --muted: #8a857c;
+    --accent: #2f5d50;
+    --accent-soft: #e4ede9;
+    --radius: 16px;
+    --serif: "New York", Georgia, "Times New Roman", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  }
+  * { margin: 0; box-sizing: border-box; }
+  body { font-family: var(--sans); background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
+
+  /* ---------- sidebar ---------- */
+  aside { width: 232px; padding: 24px 14px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
+  .logo { display: flex; align-items: baseline; gap: 8px; padding: 0 12px 22px; }
+  .logo b { font-family: var(--serif); font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
+  .logo .tag { font-size: 10px; border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; color: var(--muted); }
+  nav a { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 10px; color: var(--text); text-decoration: none; font-size: 14px; cursor: pointer; }
+  nav a:hover { background: #efece6; }
+  nav a.active { background: #edeae3; font-weight: 600; }
+  nav a .ic { width: 17px; text-align: center; opacity: .75; }
+  .side-foot { margin-top: auto; padding: 12px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .dot-live { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 6px; }
+
+  /* ---------- main ---------- */
+  main { flex: 1; overflow-y: auto; padding: 42px 48px; }
+  .page { display: none; max-width: 980px; }
+  .page.on { display: block; }
+  h1 { font-family: var(--serif); font-size: 30px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 26px; }
+
+  /* home layout */
+  .home-grid { display: grid; grid-template-columns: 1fr 280px; gap: 24px; align-items: start; }
+  .feed-day { font-size: 11px; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; margin: 26px 0 10px; }
+  .utt { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin-bottom: 10px; display: flex; gap: 16px; }
+  .utt time { font-size: 12px; color: var(--muted); white-space: nowrap; padding-top: 3px; }
+  .utt p { font-size: 14.5px; line-height: 1.65; flex: 1; }
+  .utt .copy { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; align-self: flex-start; }
+  .utt .copy:hover { color: var(--text); }
+  .search { width: 100%; padding: 11px 16px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; background: var(--card); outline: none; margin-bottom: 6px; }
+  .search:focus { border-color: var(--accent); }
+
+  .stat-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
+  .stat-card .big { font-family: var(--serif); font-size: 30px; font-weight: 600; }
+  .stat-card .lbl { color: var(--muted); font-size: 13px; margin: 2px 0 16px; }
+  .stat-card .row:last-child .lbl { margin-bottom: 0; }
+
+  /* insights */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 24px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+  .kpi .big { font-family: var(--serif); font-size: 34px; font-weight: 600; }
+  .kpi .lbl { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-top: 6px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; margin-bottom: 24px; }
+  .panel h3 { font-family: var(--serif); font-size: 19px; font-weight: 600; margin-bottom: 16px; }
+  .heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 13px); gap: 3px; }
+  .heat i { width: 13px; height: 13px; border-radius: 3.5px; background: #edeae3; }
+  .heat i.l1 { background: #cfe0d9; } .heat i.l2 { background: #8fb8a8; }
+  .heat i.l3 { background: #58907c; } .heat i.l4 { background: var(--accent); }
+  #bars { width: 100%; height: 150px; }
+
+  /* dictionary */
+  .dict-add { display: flex; gap: 10px; margin-bottom: 22px; }
+  .dict-add input { flex: 1; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; outline: none; background: var(--card); }
+  .dict-add button { padding: 12px 22px; border: none; border-radius: 12px; background: var(--text); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip { display: flex; align-items: center; gap: 9px; background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 8px 10px 8px 16px; font-size: 14px; }
+  .chip button { border: none; background: var(--accent-soft); color: var(--accent); width: 22px; height: 22px; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 1; }
+  .hint { color: var(--muted); font-size: 13px; line-height: 1.7; margin-bottom: 22px; max-width: 560px; }
+  .empty { color: var(--muted); font-size: 14px; padding: 30px 0; text-align: center; }
+</style>
+</head>
+<body>
+  <aside>
+    <div class="logo"><b>𝄞 Simo Flow</b><span class="tag">Local</span></div>
+    <nav>
+      <a data-p="home" class="active"><span class="ic">⌂</span>Home</a>
+      <a data-p="insights"><span class="ic">◫</span>Insights</a>
+      <a data-p="dictionary"><span class="ic">✎</span>Dictionary</a>
+    </nav>
+    <div class="side-foot"><span class="dot-live"></span>100% on-device<br>No cloud. No caps. Yours.</div>
+  </aside>
+
+  <main>
+    <!-- HOME -->
+    <section class="page on" id="p-home">
+      <h1 id="greet">Welcome back</h1>
+      <div class="home-grid">
+        <div>
+          <input class="search" id="q" placeholder="Search your dictations…">
+          <div id="feed"></div>
+        </div>
+        <div class="stat-card" id="mini-stats"></div>
+      </div>
+    </section>
+
+    <!-- INSIGHTS -->
+    <section class="page" id="p-insights">
+      <h1>Insights</h1>
+      <div class="cards" id="kpis"></div>
+      <div class="panel"><h3>Words per day</h3><svg id="bars"></svg></div>
+      <div class="panel"><h3>Activity</h3><div class="heat" id="heat"></div></div>
+    </section>
+
+    <!-- DICTIONARY -->
+    <section class="page" id="p-dictionary">
+      <h1>Dictionary</h1>
+      <p class="hint">Teach Simo the words it mishears — names, jargon, brands.
+        Terms are fed to the speech model as context <em>and</em> protected during cleanup.</p>
+      <div class="dict-add">
+        <input id="new-term" placeholder="e.g. Simonian, pyobjc, Ollama…">
+        <button onclick="addTerm()">Add</button>
+      </div>
+      <div class="chips" id="chips"></div>
+    </section>
+  </main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => { const d = document.createElement('span'); d.textContent = s; return d.innerHTML; };
+
+/* nav */
+document.querySelectorAll('nav a').forEach(a => a.onclick = () => {
+  document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('on'));
+  a.classList.add('active');
+  $('#p-' + a.dataset.p).classList.add('on');
+  if (a.dataset.p === 'insights') loadInsights();
+});
+
+/* home */
+async function loadFeed(q = '') {
+  const rows = await (await fetch('/api/history?q=' + encodeURIComponent(q))).json();
+  const feed = $('#feed');
+  if (!rows.length) { feed.innerHTML = '<div class="empty">No dictations yet — double-tap fn and speak.</div>'; return; }
+  let html = '', day = '';
+  const today = new Date().toISOString().slice(0, 10);
+  const yest = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+  for (const r of rows) {
+    const d = r.ts.slice(0, 10);
+    if (d !== day) { day = d; html += `<div class="feed-day">${d === today ? 'Today' : d === yest ? 'Yesterday' : d}</div>`; }
+    const t = new Date(r.ts.replace(' ', 'T')).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+    html += `<div class="utt"><time>${t}</time><p>${esc(r.polished_text)}</p>
+      <button class="copy" title="Copy" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent)">⧉</button></div>`;
+  }
+  feed.innerHTML = html;
+}
+let qt; $('#q').oninput = e => { clearTimeout(qt); qt = setTimeout(() => loadFeed(e.target.value), 250); };
+
+async function loadMini() {
+  const i = await (await fetch('/api/insights')).json();
+  const streak = calcStreak(i.per_day);
+  $('#mini-stats').innerHTML = `
+    <div class="row"><div class="big">${i.total_words.toLocaleString()}</div><div class="lbl">total words</div></div>
+    <div class="row"><div class="big">${i.wpm}</div><div class="lbl">words per minute</div></div>
+    <div class="row"><div class="big">${streak}</div><div class="lbl">day streak</div></div>`;
+}
+
+/* insights */
+function calcStreak(perDay) {
+  const days = new Set(perDay.map(d => d.date));
+  let s = 0, t = new Date();
+  if (!days.has(t.toISOString().slice(0,10))) t = new Date(Date.now() - 864e5);
+  while (days.has(t.toISOString().slice(0, 10))) { s++; t = new Date(t - 864e5); }
+  return s;
+}
+async function loadInsights() {
+  const i = await (await fetch('/api/insights')).json();
+  $('#kpis').innerHTML = `
+    <div class="kpi"><div class="big">${i.wpm}</div><div class="lbl">words per minute</div></div>
+    <div class="kpi"><div class="big">${i.fixes.toLocaleString()}</div><div class="lbl">fixes made by simo</div></div>
+    <div class="kpi"><div class="big">${i.total_words.toLocaleString()}</div><div class="lbl">total words dictated</div></div>`;
+
+  /* bar chart: last 14 days */
+  const byDate = Object.fromEntries(i.per_day.map(d => [d.date, d.words]));
+  const days = [...Array(14)].map((_, k) => {
+    const d = new Date(Date.now() - (13 - k) * 864e5).toISOString().slice(0, 10);
+    return { d, w: byDate[d] || 0 };
+  });
+  const max = Math.max(...days.map(x => x.w), 1);
+  const svg = $('#bars'); const W = svg.clientWidth || 880, H = 150, bw = W / 14 * 0.62;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = days.map((x, k) => {
+    const h = Math.max(3, x.w / max * (H - 26)), cx = k * W / 14 + W / 28;
+    return `<rect x="${cx - bw/2}" y="${H - 18 - h}" width="${bw}" height="${h}" rx="5" fill="${x.w ? 'var(--accent)' : '#edeae3'}"></rect>
+      <text x="${cx}" y="${H - 4}" font-size="9.5" fill="#8a857c" text-anchor="middle">${x.d.slice(5)}</text>`;
+  }).join('');
+
+  /* heatmap: last 15 weeks */
+  const cells = [];
+  const start = new Date(Date.now() - 104 * 864e5);
+  start.setDate(start.getDate() - start.getDay());          // align to Sunday
+  for (let k = 0; k < 105; k++) {
+    const d = new Date(+start + k * 864e5).toISOString().slice(0, 10);
+    const w = byDate[d] || 0;
+    const lvl = w === 0 ? 0 : w < 50 ? 1 : w < 200 ? 2 : w < 600 ? 3 : 4;
+    cells.push(`<i class="l${lvl}" title="${d}: ${w} words"></i>`);
+  }
+  $('#heat').innerHTML = cells.join('');
+}
+
+/* dictionary */
+async function renderChips(terms) {
+  $('#chips').innerHTML = terms.length
+    ? terms.map(t => `<span class="chip">${esc(t.term)}<button onclick="delTerm(${t.id})">✕</button></span>`).join('')
+    : '<div class="empty">No terms yet.</div>';
+}
+async function loadDict() { renderChips(await (await fetch('/api/dictionary')).json()); }
+async function addTerm() {
+  const inp = $('#new-term'); if (!inp.value.trim()) return;
+  renderChips(await (await fetch('/api/dictionary', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({term: inp.value})})).json());
+  inp.value = '';
+}
+$('#new-term').addEventListener('keydown', e => e.key === 'Enter' && addTerm());
+async function delTerm(id) {
+  renderChips(await (await fetch('/api/dictionary/' + id, {method: 'DELETE'})).json());
+}
+
+/* boot */
+$('#greet').textContent = 'Welcome back, ' + (localStorage.name || 'Lucas');
+loadFeed(); loadMini(); loadDict();
+setInterval(() => { loadFeed($('#q').value); loadMini(); }, 5000);   // live-ish feed
+</script>
+</body>
+</html>
