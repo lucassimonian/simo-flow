@@ -41,6 +41,11 @@ class HotkeyListener:
     def _handle(self, proxy, etype, event, refcon):
         # macOS disables slow taps; re-enable and let the event pass
         if etype in (kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput):
+            # Reset state: we may have missed the matching key-up while disabled,
+            # which would otherwise leave fn stuck "down" and unresponsive.
+            if self._down:
+                self._down = False
+                self.on_release()
             CGEventTapEnable(self._tap, True)
             return event
         if etype == kCGEventFlagsChanged:

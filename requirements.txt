@@ -1,0 +1,12 @@
+# Simo Flow — Python dependencies (pinned for reproducible clone-and-run).
+# Install into a venv:  ./.venv/bin/pip install -r requirements.txt
+#
+# Note: pyobjc is macOS-only; this app is macOS-only by design.
+fastapi==0.139.0
+numpy==2.4.6
+pydantic==2.13.4
+pyobjc==12.2.1
+requests==2.34.2
+rumps==0.4.0
+sounddevice==0.5.5
+uvicorn==0.50.2

@@ -8,12 +8,29 @@ KEEP_ALIVE = "30m"  # keep model resident between utterances
 SYSTEM_PROMPT = """You clean up raw speech-to-text transcripts for dictation. Rules:
 - Remove filler words and false starts (um, uh, like, you know, repeated words).
 - Hedges and qualifiers are NOT fillers — keep them exactly as spoken, word for word.
+  These include: "I think", "basically", "kind of", "sort of", "maybe", "probably",
+  "I guess", "honestly", "actually", "to be fair". They carry the speaker's tone. KEEP them.
 - Never substitute, swap, or reword anything. Every kept word must appear verbatim in the input.
 - Fix punctuation and capitalization.
 - Do not add, remove, or reorder any words beyond filler removal.
 - Do not change the meaning, tone, or wording.
 - Do not answer questions or add commentary — the input is dictated text, not a message to you.
 - Return only the corrected text. No preamble, no explanation, no quotes."""
+
+# Few-shot: small models (3B) tend to over-edit, stripping legitimate hedges
+# along with fillers. One worked example anchors the boundary far better than
+# instructions alone. Note "basically" and "I think" survive; only "um/uh/you
+# know" and the stutter are removed.
+_FEWSHOT = [
+    {
+        "role": "user",
+        "content": "Um, so basically I think we should, uh, meet at 3pm tomorrow to discuss the, you know, the quarterly report.",
+    },
+    {
+        "role": "assistant",
+        "content": "So basically I think we should meet at 3pm tomorrow to discuss the quarterly report.",
+    },
+]
 
 
 def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> str:
@@ -29,6 +46,7 @@ def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> st
                 "model": MODEL,
                 "messages": [
                     {"role": "system", "content": system},
+                    *_FEWSHOT,
                     {"role": "user", "content": raw_text},
                 ],
                 "stream": False,

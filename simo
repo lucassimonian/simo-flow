@@ -1,0 +1,64 @@
+#!/bin/bash
+# Simo Flow control: start / stop / restart / status / log / install / uninstall.
+# The install path registers a LaunchAgent so the app starts at login and
+# auto-restarts if it ever dies (KeepAlive) — no terminal needed to keep it up.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$ROOT/.venv/bin/python"
+LABEL="com.lucassimonian.simoflow"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG="$HOME/.simo-flow.log"
+
+write_plist() {
+  cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$PY</string>
+    <string>-m</string>
+    <string>engine</string>
+  </array>
+  <key>WorkingDirectory</key><string>$ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+  <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+EOF
+}
+
+case "${1:-status}" in
+  install)
+    write_plist
+    launchctl unload "$PLIST" 2>/dev/null || true
+    launchctl load "$PLIST"
+    echo "Installed. Simo Flow will start now and at every login."
+    echo "Look for 🎤 in your menu bar. First launch needs Microphone,"
+    echo "Accessibility, and Input Monitoring permissions — grant them to"
+    echo "'.venv/bin/python' when macOS prompts, then run: ./simo restart"
+    ;;
+  uninstall)
+    launchctl unload "$PLIST" 2>/dev/null || true
+    rm -f "$PLIST"
+    echo "Uninstalled the login agent. (App code and history untouched.)"
+    ;;
+  start)   launchctl load "$PLIST" 2>/dev/null && echo "started" || echo "already running (or not installed — run ./simo install)";;
+  stop)    launchctl unload "$PLIST" 2>/dev/null && echo "stopped" || echo "not running";;
+  restart) launchctl unload "$PLIST" 2>/dev/null || true; sleep 1; launchctl load "$PLIST"; echo "restarted";;
+  status)
+    if launchctl list | grep -q "$LABEL"; then echo "running (LaunchAgent loaded)"; else echo "not running"; fi
+    ;;
+  log)     tail -n 40 -f "$LOG";;
+  *) echo "usage: ./simo {install|uninstall|start|stop|restart|status|log}"; exit 1;;
+esac

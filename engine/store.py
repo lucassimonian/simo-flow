@@ -1,8 +1,17 @@
 """SQLite store: dictation history, custom dictionary, insights queries."""
+import os
 import sqlite3
 from pathlib import Path
 
 DB_PATH = Path.home() / ".simo-flow.db"
+
+# Existing DBs were created world-readable (umask 022). Tighten on import so an
+# upgrade also fixes the historical file, not just fresh installs.
+if DB_PATH.exists():
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except OSError:
+        pass
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -19,11 +28,20 @@ CREATE TABLE IF NOT EXISTS dictionary (
   term TEXT NOT NULL UNIQUE,
   created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 
 def _conn() -> sqlite3.Connection:
+    existed = DB_PATH.exists()
     c = sqlite3.connect(DB_PATH)
+    if not existed:
+        # DB holds full plaintext of everything dictated — keep it owner-only,
+        # not world-readable, on shared/managed machines.
+        os.chmod(DB_PATH, 0o600)
     c.executescript(_SCHEMA)
     # migration: audio_sec for real WPM (duration_ms is pipeline latency, not speech time)
     cols = [r[1] for r in c.execute("PRAGMA table_info(history)")]
@@ -108,6 +126,22 @@ def dictionary_prompt() -> str:
     """Terms joined for whisper's initial_prompt — biases ASR toward your vocab."""
     terms = [d["term"] for d in dictionary_terms()]
     return ("Vocabulary: " + ", ".join(terms) + ".") if terms else ""
+
+
+# ---- settings (key/value) -------------------------------------------------
+def get_setting(key: str, default: str = "") -> str:
+    with _conn() as c:
+        row = c.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 
 if __name__ == "__main__":
