@@ -2,7 +2,7 @@
 # Install into a venv:  ./.venv/bin/pip install -r requirements.txt
 #
 # Note: pyobjc is macOS-only; this app is macOS-only by design.
-fastapi==0.139.0
+fastapi==0.139.2
 numpy==2.4.6
 pydantic==2.13.4
 pyobjc==12.2.1
