@@ -4,6 +4,18 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-07-24
+
+### Fixed
+
+- **Cleanup could answer a dictated question instead of transcribing it.** A
+  general chat model, fed a question, would sometimes "helpfully" answer it, and
+  the answer got pasted as if you'd said it. Fixed structurally: cleanup output
+  is now rejected and replaced with your raw transcript whenever it isn't a
+  plausible filler-removed version of what you said (much longer, or full of
+  words you didn't speak). A question few-shot also teaches the model the
+  boundary. Covered by a regression test.
+
 ## [2.0.0] — 2026-07-24
 
 The reliability, accuracy, security, and design rebuild. Simo Flow went from a

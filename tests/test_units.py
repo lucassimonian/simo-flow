@@ -75,6 +75,30 @@ def test_dedupe_collapses_consecutive_duplicates():
 
 
 # --------------------------------------------------------------------------
+# polish: the rewrite guard — a dictated question must never come back answered
+# --------------------------------------------------------------------------
+def test_rewrite_guard_rejects_answered_question():
+    from engine.polish import _is_rewrite
+
+    raw = "how do I become a top vibe coder and stand out from other candidates"
+    answer = ("To become a top vibe coder, focus on foundational skills, master "
+              "relevant programming languages, and stay updated with industry trends.")
+    assert _is_rewrite(raw, answer) is True  # an answer balloons length + new words
+    assert _is_rewrite("what is the capital of france", "Paris") is True  # substitution
+
+
+def test_rewrite_guard_allows_legit_cleanup():
+    from engine.polish import _is_rewrite
+
+    # filler removal + punctuation is not a rewrite
+    assert _is_rewrite("um so i think we should meet at 3pm", "So I think we should meet at 3pm.") is False
+    # a question cleaned and punctuated (not answered) is fine
+    assert _is_rewrite("what time are we meeting tomorrow", "What time are we meeting tomorrow?") is False
+    # empty output isn't flagged (handled elsewhere)
+    assert _is_rewrite("hello", "") is False
+
+
+# --------------------------------------------------------------------------
 # pipeline: junk transcripts are never pasted
 # --------------------------------------------------------------------------
 def test_junk_transcripts_cover_whisper_silence_outputs():

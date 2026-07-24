@@ -1,4 +1,15 @@
-"""Polish pass: send raw transcript to local Ollama, get cleaned text back."""
+"""Polish pass: send raw transcript to local Ollama, get cleaned text back.
+
+Cleanup only ever *removes* filler words, so the output is always a shortened,
+same-words version of the input. `_is_rewrite` enforces that structurally: if the
+model instead answers a dictated question, summarizes, or substitutes words
+(a general chat model's instinct when the input reads like a prompt), the output
+won't match the input and we discard it, pasting the raw transcript instead. The
+prompt and few-shot reduce how often that happens; the guard guarantees a bad
+result never reaches the cursor.
+"""
+import re
+
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -30,7 +41,38 @@ _FEWSHOT = [
         "role": "assistant",
         "content": "So basically I think we should meet at 3pm tomorrow to discuss the quarterly report.",
     },
+    # A dictated question must be cleaned and punctuated, NEVER answered — the
+    # most important boundary for a chat model doing a formatting job.
+    {
+        "role": "user",
+        "content": "so like what time are we meeting tomorrow for the um the review call",
+    },
+    {
+        "role": "assistant",
+        "content": "So what time are we meeting tomorrow for the review call?",
+    },
 ]
+
+
+def _is_rewrite(raw: str, out: str) -> bool:
+    """True if `out` is not a plausible filler-removed version of `raw` — i.e.
+    the model rewrote, answered, expanded, or substituted instead of cleaning.
+
+    Cleanup only ever drops words, so a valid output is never much longer than
+    the input and never introduces many words that weren't spoken. Either of
+    those means the model went off-task and the output must be discarded.
+    """
+    raw_w = re.findall(r"[a-z0-9']+", raw.lower())
+    out_w = re.findall(r"[a-z0-9']+", out.lower())
+    if not out_w:
+        return False
+    # an answer or expansion balloons the length; cleanup shortens
+    if len(out_w) > len(raw_w) * 1.3 + 4:
+        return True
+    # cleanup keeps the spoken words; an answer is full of new ones
+    raw_set = set(raw_w)
+    new_words = sum(1 for w in out_w if w not in raw_set)
+    return new_words / len(out_w) > 0.4
 
 
 def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> str:
@@ -60,6 +102,12 @@ def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> st
         # ponytail: strip accidental wrapping quotes, the only 3B misfire seen in testing
         if len(out) > 1 and out[0] == out[-1] and out[0] in "\"'":
             out = out[1:-1]
+        # Structural safety net: if the model answered/rewrote instead of cleaning
+        # (e.g. it "helpfully" answered a dictated question), paste the raw words
+        # the user actually spoke, never the model's invention.
+        if _is_rewrite(raw_text, out):
+            print(f"[simo] polish rejected as a rewrite, using raw transcript: {out!r}", flush=True)
+            return raw_text
         return out or raw_text
     except Exception:
         return raw_text  # never block the paste on a polish failure
