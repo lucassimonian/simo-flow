@@ -11,6 +11,12 @@ I built this because I kept hitting [Wispr Flow's](https://wisprflow.ai) free-ti
 
 > Full disclosure: I'm not a trained engineer — I work in tech, not software. v1 was built in a day. Then it broke, and rebuilding it *properly* — the backend, the security, the failure handling — is where the real work (and this repo) happened.
 
+<p align="center">
+  <img src="docs/demo.gif" width="460" alt="Holding fn and dictating a sentence — the text lands in Notes, transcribed on-device, with a live waveform pill" />
+  <br>
+  <em>Hold <code>fn</code>, speak, release. Transcribed entirely on-device — nothing leaves the Mac.</em>
+</p>
+
 ```
 hold fn ──► mic opens on demand (16kHz) ──► whisper.cpp + Metal
                                                   │ raw transcript
@@ -30,9 +36,15 @@ Two speed/accuracy tiers, switchable from the menu bar:
 
 The accurate model transcribes disfluencies faithfully; the LLM cleanup pass then removes fillers while preserving your hedges and wording. All on-device, no network hop, no account.
 
+## The dashboard
+
+A local dashboard at `localhost:7331` — searchable history, insights (words per minute, streak, activity), and a personal **Dictionary** that biases the speech model toward your names and jargon. Light and dark.
+
 ![Simo Flow dashboard — history feed](docs/dashboard-home.png)
 
 ![Simo Flow dashboard — insights](docs/dashboard-insights.png)
+
+![Simo Flow dashboard — dark mode](docs/dashboard-home-dark.png)
 
 ## Features
 
