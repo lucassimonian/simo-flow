@@ -3,7 +3,7 @@
 #
 # Note: pyobjc is macOS-only; this app is macOS-only by design.
 fastapi==0.139.0
-numpy==2.4.6
+numpy==2.5.1
 pydantic==2.13.4
 pyobjc==12.2.1
 requests==2.34.2
