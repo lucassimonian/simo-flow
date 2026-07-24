@@ -1,8 +1,15 @@
 # Simo Flow
 
-**Fully local, offline voice dictation for macOS.** Hold `fn`, speak, release — clean text appears at your cursor in any app. No cloud, no subscription, no word caps. Your audio never leaves your machine.
+[![CI](https://github.com/lucassimonian/simo-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/lucassimonian/simo-flow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Platform: macOS](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-black?logo=apple)
+![100% local](https://img.shields.io/badge/data-100%25%20on--device-brightgreen)
 
-Built as a local-first answer to [Wispr Flow](https://wisprflow.ai) after tearing down its app bundle and discovering it runs **zero** on-device inference — every word you dictate is sent to their servers. Simo Flow does the same job entirely on Apple Silicon.
+**Fully local, offline voice dictation for macOS.** Hold `fn`, speak, release — clean text lands at your cursor in any app. No cloud, no subscription, no weekly word cap. Your voice never leaves your machine.
+
+I built this because I kept hitting [Wispr Flow's](https://wisprflow.ai) free-tier cap. Then I pulled apart its app bundle to see how it worked, and found it does **zero** on-device inference — every word you dictate gets sent to their servers. I didn't love that. So Simo Flow does the whole job on my Mac, and nothing leaves it.
+
+> Full disclosure: I'm not a trained engineer — I work in tech, not software. v1 was built in a day. Then it broke, and rebuilding it *properly* — the backend, the security, the failure handling — is where the real work (and this repo) happened.
 
 ```
 hold fn ──► mic opens on demand (16kHz) ──► whisper.cpp + Metal
@@ -98,6 +105,28 @@ tests/               assert-based per-module self-checks + full E2E
 ```
 
 Every module runs standalone as its own self-check: `./.venv/bin/python -m engine.stt` etc.
+
+## Testing
+
+Two layers, split by what they need:
+
+- **Unit tests** (`tests/test_units.py`) — pure logic with no mic, server, or GUI: the silence guard, junk-transcript filter, transcript dedupe, the SQLite store, and the dashboard's `Origin`/`Host` security guards. These run in CI on every push.
+- **End-to-end** (`tests/test_pipeline.py`) + per-module self-checks — exercise the real mic → whisper → Ollama → paste path, so they need the hardware and servers and run locally, not in CI.
+
+```bash
+./.venv/bin/python -m pytest tests/test_units.py -q
+```
+
+## Limitations
+
+Being honest about what this is and isn't:
+
+- **Apple Silicon, macOS 14+ only.** The Metal acceleration and the `fn`-key event tap are Mac-specific; there's no Intel or non-Mac build.
+- **Run from source, not a signed app.** You clone and run it — deliberately, so you can audit exactly what gets your mic and accessibility access before granting them. There's no notarized `.dmg` yet, so there's no double-click installer.
+- **First-run permission friction.** macOS ties Input Monitoring / Accessibility / Microphone to the Python binary; you grant them once, and re-creating the venv resets them.
+- **Needs Ollama running** for Clean mode (Exact mode works without it).
+- **~3.5GB of models** on disk (turbo + base.en + the 3B LLM).
+- **The first dictation after launch** is ~0.5s slower than the rest (macOS activating the mic the first time); every subsequent one is fast.
 
 ## Contributing & feedback
 

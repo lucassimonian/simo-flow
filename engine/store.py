@@ -62,13 +62,15 @@ def log_dictation(raw: str, polished: str, duration_ms: int, audio_sec: float = 
 def history(limit: int = 100, q: str = "") -> list[dict]:
     with _conn() as c:
         c.row_factory = sqlite3.Row
+        # id DESC breaks ties: two dictations in the same second must still order
+        # deterministically newest-first, or the feed order flickers
         if q:
             rows = c.execute(
-                "SELECT * FROM history WHERE polished_text LIKE ? ORDER BY ts DESC LIMIT ?",
+                "SELECT * FROM history WHERE polished_text LIKE ? ORDER BY ts DESC, id DESC LIMIT ?",
                 (f"%{q}%", limit),
             )
         else:
-            rows = c.execute("SELECT * FROM history ORDER BY ts DESC LIMIT ?", (limit,))
+            rows = c.execute("SELECT * FROM history ORDER BY ts DESC, id DESC LIMIT ?", (limit,))
         return [dict(r) for r in rows]
 
 

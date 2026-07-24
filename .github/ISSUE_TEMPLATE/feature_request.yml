@@ -1,0 +1,19 @@
+name: Feature request / idea
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What would you like, and what problem does it solve for you?
+    validations:
+      required: true
+  - type: checkboxes
+    id: local
+    attributes:
+      label: Privacy check
+      description: Simo Flow keeps everything on-device.
+      options:
+        - label: This idea does not require sending audio or transcripts off the machine
+          required: true

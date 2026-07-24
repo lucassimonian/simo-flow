@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # keep GitHub Actions pinned versions current
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  # keep Python deps current — visible dependency hygiene matters on a
+  # security-positioned project
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
