@@ -51,7 +51,8 @@ def _reject_cross_origin(request: Request) -> None:
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "dashboard.html")
+    # no-store so an updated dashboard is never masked by a stale browser cache
+    return FileResponse(STATIC / "dashboard.html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/history")

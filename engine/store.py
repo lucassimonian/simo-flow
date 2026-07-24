@@ -72,6 +72,15 @@ def history(limit: int = 100, q: str = "") -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def clear_history() -> int:
+    """Delete all dictation history. Returns the number of rows removed.
+    (The dictionary and settings are left intact.)"""
+    with _conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+        c.execute("DELETE FROM history")
+        return n
+
+
 def insights() -> dict:
     with _conn() as c:
         total_words, total_utt = c.execute(

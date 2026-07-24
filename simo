@@ -29,7 +29,10 @@ write_plist() {
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <!-- Relaunch only on a crash (non-zero exit). A clean Quit from the menu
+       exits 0 and stays quit — a Quit button that quits. -->
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
   <key>ProcessType</key><string>Interactive</string>
@@ -53,6 +56,7 @@ case "${1:-status}" in
     rm -f "$PLIST"
     echo "Uninstalled the login agent. (App code and history untouched.)"
     ;;
+  open)    launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null && echo "reopened" || { launchctl load "$PLIST" 2>/dev/null && echo "reopened"; } ;;
   start)   launchctl load "$PLIST" 2>/dev/null && echo "started" || echo "already running (or not installed — run ./simo install)";;
   stop)    launchctl unload "$PLIST" 2>/dev/null && echo "stopped" || echo "not running";;
   restart) launchctl unload "$PLIST" 2>/dev/null || true; sleep 1; launchctl load "$PLIST"; echo "restarted";;
@@ -60,5 +64,5 @@ case "${1:-status}" in
     if launchctl list | grep -q "$LABEL"; then echo "running (LaunchAgent loaded)"; else echo "not running"; fi
     ;;
   log)     tail -n 40 -f "$LOG";;
-  *) echo "usage: ./simo {install|uninstall|start|stop|restart|status|log}"; exit 1;;
+  *) echo "usage: ./simo {install|uninstall|open|start|stop|restart|status|log}"; exit 1;;
 esac
