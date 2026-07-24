@@ -31,6 +31,7 @@ class Recorder:
         self.reject_reason = ""  # why the last end() returned None, for the UI
         self._lock = threading.Lock()
         self._stream: sd.InputStream | None = None
+        self._needs_reinit = False  # set after a silent capture (device may have changed)
         self.on_stream_lost = None  # retained for API compatibility; unused on-demand
 
     def _cb(self, indata, frames, t, status) -> None:
@@ -55,13 +56,17 @@ class Recorder:
             self._chunks = []
             self._recording = True
         try:
-            # follow device changes: PortAudio caches its device list, so a
-            # newly connected mic is invisible until it is re-initialised
-            try:
-                sd._terminate()
-                sd._initialize()
-            except Exception:
-                pass  # re-init is best-effort; a working default still opens below
+            # Only re-initialise PortAudio when the last capture came back silent
+            # (a likely sign the input device changed, e.g. AirPods connected).
+            # Doing it every press cost ~70ms of first-word latency for nothing
+            # the common case needs.
+            if self._needs_reinit:
+                try:
+                    sd._terminate()
+                    sd._initialize()
+                except Exception:
+                    pass
+                self._needs_reinit = False
             self._stream = sd.InputStream(
                 samplerate=RATE, channels=1, dtype="float32", blocksize=512, callback=self._cb
             )
@@ -101,6 +106,9 @@ class Recorder:
         # A dead/muted mic yields near-zeros, which whisper turns into
         # "[end of transcript]". Refuse to send silence downstream.
         if float(np.sqrt(np.mean(trimmed**2))) < SILENCE_RMS:
+            # silence can mean the device changed under us — refresh PortAudio's
+            # device list before the next capture so a new mic is picked up
+            self._needs_reinit = True
             self.reject_reason = "no speech detected — is the mic muted?"
             return None
         return trimmed
