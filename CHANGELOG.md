@@ -4,6 +4,26 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] — 2026-07-27
+
+### Fixed
+
+- **A dictated question could still be pasted as its answer.** The 2.0.1 guard
+  rejected cleanup output that was much longer than the transcript or full of
+  unspoken words, which caught obvious answers ("what is the capital of France"
+  → "Paris") but leaked two shapes: an answer that reorders your own words ("…is
+  the capital of France" → "The capital of France is Paris"), and an answer that
+  collapses the utterance to a single word you did say ("how do you spell
+  restaurant" → "Restaurant"). Both are now impossible to paste.
+
+  The guard was rebuilt on the exact contract instead of a heuristic: cleanup is
+  deletion-only, so a valid output must be an ordered **subsequence** of the
+  spoken words (no reordering, substituting, or appending) **and** must retain
+  most of the non-filler content words (no collapsing to a keyword). Anything
+  else falls back to your raw transcript — the model can never reach the cursor
+  with words you didn't speak. Six regression tests pin every answer shape
+  observed from the model; verified end-to-end against the live cleanup model.
+
 ## [2.0.1] — 2026-07-24
 
 ### Fixed

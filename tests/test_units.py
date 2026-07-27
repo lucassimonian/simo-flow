@@ -75,16 +75,71 @@ def test_dedupe_collapses_consecutive_duplicates():
 
 
 # --------------------------------------------------------------------------
-# polish: the rewrite guard — a dictated question must never come back answered
+# polish: the rewrite guard — a dictated question must NEVER come back answered.
+#
+# Contract (see polish.py header): cleanup only ever *deletes* filler, so a valid
+# output is an ordered subsequence of the spoken words, and it keeps the real
+# content words (fillers may go, content may not). Anything else — reordering,
+# substituting, appending an answer, or collapsing to a keyword — is a rewrite
+# and must be discarded in favour of the raw transcript. These tests pin every
+# answer shape we have actually observed qwen produce.
 # --------------------------------------------------------------------------
-def test_rewrite_guard_rejects_answered_question():
+def test_rewrite_guard_rejects_answer_that_adds_words():
     from engine.polish import _is_rewrite
 
     raw = "how do I become a top vibe coder and stand out from other candidates"
     answer = ("To become a top vibe coder, focus on foundational skills, master "
               "relevant programming languages, and stay updated with industry trends.")
-    assert _is_rewrite(raw, answer) is True  # an answer balloons length + new words
-    assert _is_rewrite("what is the capital of france", "Paris") is True  # substitution
+    assert _is_rewrite(raw, answer) is True  # balloons length + words never spoken
+
+
+def test_rewrite_guard_rejects_substituted_answer():
+    from engine.polish import _is_rewrite
+
+    # word never spoken — not a subsequence of the input
+    assert _is_rewrite("what is the capital of france", "Paris") is True
+    assert _is_rewrite("what's two plus two", "2 + 2") is True
+
+
+def test_rewrite_guard_rejects_reordered_answer():
+    from engine.polish import _is_rewrite
+
+    # every word except "Paris" was spoken, but the model reordered them into an
+    # answer — "is/Paris" cannot follow "France", so it isn't a subsequence.
+    assert _is_rewrite("what is the capital of France", "The capital of France is Paris.") is True
+
+
+def test_rewrite_guard_rejects_collapse_to_keyword():
+    from engine.polish import _is_rewrite
+
+    # THE REGRESSION: "Restaurant" is a subsequence of the input (it was spoken),
+    # yet the model answered by dropping every other content word. The old
+    # word-overlap guard missed this because zero new words were introduced.
+    assert _is_rewrite("how do you spell restaurant", "Restaurant") is True
+
+
+def test_rewrite_guard_rejects_dropped_negation():
+    from engine.polish import _is_rewrite
+
+    # A dropped negator is a valid subsequence that keeps most words, yet it
+    # INVERTS meaning — the exact harm the guard exists to stop, reached by
+    # deletion instead of addition. Every one of these must be rejected.
+    assert _is_rewrite("we should not merge this branch yet", "we should merge this branch yet") is True
+    assert _is_rewrite("please don't cancel the meeting", "please cancel the meeting") is True
+    assert _is_rewrite("increase the budget by not more than 10 percent", "increase the budget by 10 percent") is True
+    assert _is_rewrite("I never said that", "I said that") is True
+
+
+def test_rewrite_guard_survives_apostrophe_and_accent_variants():
+    from engine.polish import _is_rewrite
+
+    # curly apostrophe in the transcript, straight in the model output: the same
+    # word. Must NOT be a false reject (contractions are everywhere).
+    assert _is_rewrite("I don’t think we should um go", "I don't think we should go.") is False
+    # negation preserved across the apostrophe-style change is fine
+    assert _is_rewrite("please don’t cancel", "Please don't cancel.") is False
+    # accent normalized away by the model is still the same word, not a rewrite
+    assert _is_rewrite("grab a café before we start", "Grab a cafe before we start.") is False
 
 
 def test_rewrite_guard_allows_legit_cleanup():
@@ -92,9 +147,19 @@ def test_rewrite_guard_allows_legit_cleanup():
 
     # filler removal + punctuation is not a rewrite
     assert _is_rewrite("um so i think we should meet at 3pm", "So I think we should meet at 3pm.") is False
-    # a question cleaned and punctuated (not answered) is fine
+    # hedges survive verbatim alongside filler removal
+    assert _is_rewrite(
+        "um so basically i think we should uh meet at 3pm tomorrow to discuss the you know the quarterly report",
+        "So basically I think we should meet at 3pm tomorrow to discuss the quarterly report.",
+    ) is False
+    # a question cleaned and punctuated (NOT answered) is the desired output
     assert _is_rewrite("what time are we meeting tomorrow", "What time are we meeting tomorrow?") is False
-    # empty output isn't flagged (handled elsewhere)
+    assert _is_rewrite("who wrote Romeo and Juliet", "Who wrote Romeo and Juliet?") is False
+    # an imperative transcribed faithfully, not obeyed
+    assert _is_rewrite("give me three ideas for dinner", "Give me three ideas for dinner.") is False
+    # a stutter/repeat removed is still cleanup
+    assert _is_rewrite("send me the the report", "Send me the report.") is False
+    # empty output isn't flagged (handled by the caller, which falls back to raw)
     assert _is_rewrite("hello", "") is False
 
 

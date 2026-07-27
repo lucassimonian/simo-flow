@@ -95,9 +95,10 @@ Things that turned out to matter, in the order they bit me:
 4. **Accurate ASR looks "worse" until you see the pipeline.** `base.en` drops fillers — and real words with them. `large-v3-turbo` faithfully captures *"um, so basically I think…"*, which looks messier but is more accurate; the LLM pass then removes only the fillers. Feed the polish step the honest transcript, not a lossy one.
 5. **Serialize the pipeline or corrupt the clipboard.** Two quick back-to-back dictations spawned two pipeline threads racing on the single system clipboard — you could paste the wrong utterance. A single worker queue processes commits in order; paste is never concurrent.
 6. **3B models over-edit.** `qwen2.5:3b` treats hedges ("basically", "I think") as fillers. The fix: "never substitute — every kept word must appear verbatim", a named hedge list to *keep*, and one few-shot example (the highest-leverage lever for a small model).
-7. **The `fn` key is contested territory.** macOS binds it to the emoji picker, Apple Dictation wants it, and a stale Character Palette window will silently swallow your pasted text via key focus. A HID-level consuming event tap + one system setting resolves it.
-8. **Localhost isn't automatically private.** The dashboard binds `127.0.0.1`, but a webpage you visit can still reach it: forged cross-origin writes, and DNS-rebinding to read `/api/history`. Both are closed with Origin + Host header checks. For an app whose promise is "your words never leave the machine," the read path had to be shut, not just the writes.
-9. **`pkill -f "python ..."` doesn't match a venv GUI process on macOS** — the venv execs the framework `Python.app` binary (capital P). And `launchctl` paths don't inherit your shell `PATH`, so `whisper-server` has to be resolved by absolute path.
+7. **A chat model wants to answer you — so the prompt can't be the guarantee.** Feed `"how do you spell restaurant"` to an instruction-tuned model and its deepest prior is to *answer*, not transcribe. Prompt and few-shot cut how often it happens; they can't make it impossible. So the guarantee is structural, from the one fact that cleanup is deletion-only: valid output is an ordered **subsequence** of the spoken words that **keeps most of the content words**. An answer can't satisfy both — it reorders ("The capital of France is Paris"), substitutes ("Paris"), or collapses to a keyword ("Restaurant"). Anything that fails falls back to your raw transcript, so a word you never spoke physically cannot reach the cursor. The right end state pushes this invariant into *generation* (a constrained-decoding grammar) so the model can't even emit the wrong token — a faithfulness guarantee a cloud LLM can't make.
+8. **The `fn` key is contested territory.** macOS binds it to the emoji picker, Apple Dictation wants it, and a stale Character Palette window will silently swallow your pasted text via key focus. A HID-level consuming event tap + one system setting resolves it.
+9. **Localhost isn't automatically private.** The dashboard binds `127.0.0.1`, but a webpage you visit can still reach it: forged cross-origin writes, and DNS-rebinding to read `/api/history`. Both are closed with Origin + Host header checks. For an app whose promise is "your words never leave the machine," the read path had to be shut, not just the writes.
+10. **`pkill -f "python ..."` doesn't match a venv GUI process on macOS** — the venv execs the framework `Python.app` binary (capital P). And `launchctl` paths don't inherit your shell `PATH`, so `whisper-server` has to be resolved by absolute path.
 
 ## Layout
 
@@ -106,7 +107,7 @@ engine/__main__.py   menu-bar app, fn state machine, serialized pipeline worker,
 engine/hotkey.py     HID-level consuming CGEventTap
 engine/audio.py      on-demand mic capture, silence trim + silence guard
 engine/stt.py        whisper-server client + tiers, health-check/restart, orphan reaping
-engine/polish.py     LLM cleanup with word-preservation constraints + hedge few-shot
+engine/polish.py     LLM cleanup + deletion-only integrity guard (subsequence + content retention) + hedge few-shot
 engine/inject.py     clipboard set → Cmd+V → restore (non-text-safe)
 engine/store.py      SQLite (0600): history, dictionary, settings, insights
 engine/api.py        FastAPI on 127.0.0.1:7331 — Origin + Host guarded, zero external calls
@@ -122,7 +123,7 @@ Every module runs standalone as its own self-check: `./.venv/bin/python -m engin
 
 Two layers, split by what they need:
 
-- **Unit tests** (`tests/test_units.py`) — pure logic with no mic, server, or GUI: the silence guard, junk-transcript filter, transcript dedupe, the SQLite store, and the dashboard's `Origin`/`Host` security guards. These run in CI on every push.
+- **Unit tests** (`tests/test_units.py`) — pure logic with no mic, server, or GUI: the silence guard, junk-transcript filter, transcript dedupe, the dictation-integrity guard (a dictated question must never come back answered), the SQLite store, and the dashboard's `Origin`/`Host` security guards. These run in CI on every push.
 - **End-to-end** (`tests/test_pipeline.py`) + per-module self-checks — exercise the real mic → whisper → Ollama → paste path, so they need the hardware and servers and run locally, not in CI.
 
 ```bash

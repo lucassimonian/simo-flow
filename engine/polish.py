@@ -1,14 +1,16 @@
 """Polish pass: send raw transcript to local Ollama, get cleaned text back.
 
-Cleanup only ever *removes* filler words, so the output is always a shortened,
-same-words version of the input. `_is_rewrite` enforces that structurally: if the
-model instead answers a dictated question, summarizes, or substitutes words
-(a general chat model's instinct when the input reads like a prompt), the output
-won't match the input and we discard it, pasting the raw transcript instead. The
-prompt and few-shot reduce how often that happens; the guard guarantees a bad
-result never reaches the cursor.
+Cleanup only ever *removes* filler words, so the output is always a deletion-only
+edit of the input — an ordered subsequence that keeps the real content words.
+`_is_rewrite` enforces exactly that: if the model instead answers a dictated
+question, summarizes, substitutes, reorders, or collapses the utterance to a
+keyword (a general chat model's instinct when the input reads like a prompt), the
+output stops being a content-preserving subsequence and we discard it, pasting
+the raw transcript instead. The prompt and few-shot reduce how often that
+happens; the guard guarantees a rewritten result never reaches the cursor.
 """
 import re
+import unicodedata
 
 import requests
 
@@ -54,25 +56,96 @@ _FEWSHOT = [
 ]
 
 
-def _is_rewrite(raw: str, out: str) -> bool:
-    """True if `out` is not a plausible filler-removed version of `raw` — i.e.
-    the model rewrote, answered, expanded, or substituted instead of cleaning.
+# Disfluencies cleanup may delete freely. Deliberately does NOT include hedges
+# ("I think", "basically", "actually", ...) — those are content we keep verbatim
+# (see SYSTEM_PROMPT). Calibration knob: add whisper disfluencies here if real
+# cleanups get rejected. Err on the small side — a false reject only pastes the
+# raw transcript (your exact words), never a wrong or invented one.
+_FILLERS = frozenset(
+    {"um", "uh", "uhh", "uhm", "erm", "er", "hmm", "mm", "mmm", "ah", "like"}
+)
 
-    Cleanup only ever drops words, so a valid output is never much longer than
-    the input and never introduces many words that weren't spoken. Either of
-    those means the model went off-task and the output must be discarded.
+# Cleanup drops fillers, not real words. If less than this share of the spoken
+# content words survives, the model collapsed the utterance into an answer or
+# keyword rather than cleaning it. Knob: raise toward 1.0 to be stricter (more
+# raw-transcript fallbacks), lower to tolerate heavier trims.
+_MIN_CONTENT_RETENTION = 0.5
+
+# Polarity words are meaning-critical: dropping one is a valid subsequence that
+# barely dents the retention ratio yet INVERTS the sentence ("don't cancel" ->
+# "cancel"). Retention counts words; it can't see that the one dropped was a
+# negator. So negators are mandatory-retain: if the transcript had more of them
+# than the output, the meaning changed and we reject regardless of ratio. (A
+# token is a negator if it's in this set or is an n't-contraction like "don't".)
+_NEGATORS = frozenset(
+    {"not", "no", "never", "none", "nothing", "nobody", "neither", "nor",
+     "cannot", "without", "nowhere", "hardly", "barely", "scarcely"}
+)
+
+_WORD = re.compile(r"[a-z0-9']+")
+# ASR and small LLMs disagree on apostrophe style (' vs ’ ‘ ʼ); normalize so a
+# contraction is one token on both sides and doesn't read as a substitution.
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "′": "'"})
+
+
+def _tokens(s: str) -> list[str]:
+    # Fold apostrophe style and diacritics (café -> cafe) so the same word
+    # matches on both sides whether or not the model normalized it.
+    s = unicodedata.normalize("NFKD", s.translate(_APOSTROPHES))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return _WORD.findall(s.lower())
+
+
+def _negator_count(words: list[str]) -> int:
+    return sum(1 for w in words if w in _NEGATORS or w.endswith("n't"))
+
+
+def _is_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    """True if every word of `needle` appears in `haystack` in order (a
+    deletion-only alignment). Consumes `haystack` left-to-right via an iterator,
+    so each match must come after the previous one."""
+    it = iter(haystack)
+    return all(w in it for w in needle)
+
+
+def _is_rewrite(raw: str, out: str) -> bool:
+    """True if `out` is not a filler-removed version of `raw` — i.e. the model
+    rewrote, answered, expanded, substituted, reordered, or collapsed instead of
+    cleaning, so `out` must be discarded in favour of the raw transcript.
+
+    The contract is deletion-only, which has an exact structural form that no
+    answer can satisfy:
+
+      1. `out` must be an ordered SUBSEQUENCE of `raw` — cleanup only removes
+         words, so it can never introduce, reorder, or substitute one. This
+         alone rejects every answer that adds or moves words ("Paris", "The
+         capital of France is Paris").
+      2. `out` must keep every NEGATOR it was given — dropping "not"/"don't" is
+         a valid subsequence that inverts meaning ("don't cancel" -> "cancel"),
+         which retention (a word count) can't catch. Negators are mandatory.
+      3. `out` must RETAIN most of the spoken content words — an answer that
+         collapses the utterance to a word you did say ("how do you spell
+         restaurant" -> "Restaurant") is a valid subsequence but drops the
+         real content. Fillers don't count toward retention; content does.
     """
-    raw_w = re.findall(r"[a-z0-9']+", raw.lower())
-    out_w = re.findall(r"[a-z0-9']+", out.lower())
+    raw_w = _tokens(raw)
+    out_w = _tokens(out)
     if not out_w:
-        return False
-    # an answer or expansion balloons the length; cleanup shortens
-    if len(out_w) > len(raw_w) * 1.3 + 4:
+        return False  # empty handled by caller (falls back to raw)
+    # (1) deletion-only: reordering, substituting, or appending breaks this.
+    if not _is_subsequence(out_w, raw_w):
         return True
-    # cleanup keeps the spoken words; an answer is full of new ones
-    raw_set = set(raw_w)
-    new_words = sum(1 for w in out_w if w not in raw_set)
-    return new_words / len(out_w) > 0.4
+    # (2) meaning-critical polarity: a dropped negator flips the sentence.
+    if _negator_count(out_w) < _negator_count(raw_w):
+        return True
+    # (3) content retention: a collapse-to-keyword is a subsequence but guts the
+    # content. Compare non-filler words kept vs non-filler words spoken.
+    content = [w for w in raw_w if w not in _FILLERS]
+    if content:
+        kept = sum(1 for w in out_w if w not in _FILLERS)
+        if kept / len(content) < _MIN_CONTENT_RETENTION:
+            return True
+    return False
 
 
 def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> str:
