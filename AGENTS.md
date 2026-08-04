@@ -71,9 +71,25 @@ reproduce the wrong-window class of bug on demand — use it after any change to
    and must keep working with the file opened straight from disk.
 
 9. **`engine/api.py` binds `127.0.0.1` only.** The Host allow-list blocks DNS
-   rebinding and the Origin check blocks cross-origin writes. These are the reason
-   a browsing session cannot read your dictation history. Do not add permissive
-   CORS, do not bind `0.0.0.0`, and keep write endpoints behind `_reject_cross_origin`.
+   rebinding and `_reject_cross_origin` blocks cross-origin writes. These are the
+   reason a browsing session cannot read your dictation history. Do not add
+   permissive CORS, do not bind `0.0.0.0`, and keep every write plus
+   `/api/history/export` behind `_reject_cross_origin`. Three specifics a security
+   review flagged as easy to get wrong later:
+   - **Never add `CORSMiddleware`.** Every read endpoint is unreadable to a
+     malicious page *only* because no `Access-Control-Allow-Origin` header is ever
+     sent. That absence is the entire defence, and
+     `test_no_cors_headers_are_ever_sent` exists to keep it that way.
+   - **The check on `DELETE` looks redundant and is not.** Browsers happen to
+     block a cross-origin `DELETE` at preflight today, so the guard never fires
+     under attack — but it is the last line if CORS is ever loosened. Where it
+     genuinely earns its keep is `POST /api/dictionary`: a `text/plain` HTML form
+     can dodge the JSON preflight, and `Request.json()` does not check
+     `Content-Type`.
+   - **`_reject_cross_origin` must fail closed.** It rejects a missing Origin
+     *and* a missing Referer. `fetch()` omits Origin on same-origin GETs, so the
+     Referer fallback is what keeps the dashboard's own export working — don't
+     "simplify" it away.
 
 10. **`~/.simo-flow.db` and `~/.simo-flow.log` hold the plaintext of everything
     ever dictated, at mode `0600`.** Never loosen those permissions, never write

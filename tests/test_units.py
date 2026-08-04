@@ -285,12 +285,59 @@ def test_history_delete_is_refused_cross_origin(client):
     assert bad.status_code == 403
 
 
+SAME_ORIGIN = {**GOOD_HOST, "Origin": "http://127.0.0.1:7331"}
+# fetch() omits Origin on same-origin GETs, so this is what the dashboard's own
+# export request actually looks like on the wire.
+SAME_REFERER = {**GOOD_HOST, "Referer": "http://127.0.0.1:7331/#privacy"}
+
+
+def test_write_guard_fails_closed_without_origin_or_referer(client):
+    """A client that simply omits the header must not inherit write access — for
+    these endpoints this check is the only protection there is."""
+    assert client.delete("/api/history", headers=GOOD_HOST).status_code == 403
+    assert client.post("/api/dictionary", json={"term": "x"}, headers=GOOD_HOST).status_code == 403
+
+
+def test_write_guard_accepts_referer_when_origin_absent(client):
+    assert client.delete("/api/history", headers=SAME_REFERER).status_code == 200
+
+
+def test_write_guard_rejects_foreign_referer(client):
+    bad = {**GOOD_HOST, "Referer": "http://evil.com/page"}
+    assert client.delete("/api/history", headers=bad).status_code == 403
+
+
+def test_export_is_refused_cross_origin(client):
+    """Unreadable cross-origin anyway, but an unbounded full-table read is worth
+    denying as a trigger too."""
+    bad = {**GOOD_HOST, "Origin": "http://evil.com"}
+    assert client.get("/api/history/export", headers=bad).status_code == 403
+    assert client.get("/api/history/export", headers=GOOD_HOST).status_code == 403
+
+
+def test_export_works_the_way_the_dashboard_actually_calls_it(client):
+    """Guards the regression this pairs with: the dashboard's export is a
+    same-origin GET, which carries Referer and no Origin."""
+    assert client.get("/api/history/export", headers=SAME_REFERER).status_code == 200
+
+
+def test_no_cors_headers_are_ever_sent(client):
+    """A great deal rides on the *absence* of Access-Control-Allow-Origin: it is
+    what makes every read endpoint unreadable to a malicious page. Nothing else
+    enforces that, so assert it — adding permissive CORS middleware later would
+    silently open the entire history to any site the user visits."""
+    for path in ("/", "/api/history", "/api/history/export", "/api/insights", "/api/dictionary"):
+        r = client.get(path, headers={**SAME_REFERER, "Origin": "http://evil.com"})
+        assert "access-control-allow-origin" not in {k.lower() for k in r.headers}, path
+        assert "access-control-allow-credentials" not in {k.lower() for k in r.headers}, path
+
+
 def test_history_export_returns_every_row(client):
     from engine import store
 
     for i in range(3):
         store.log_dictation(f"raw {i}", f"Polished {i}.", 100, 1.0, "unit")
-    r = client.get("/api/history/export", headers=GOOD_HOST)
+    r = client.get("/api/history/export", headers=SAME_REFERER)
     assert r.status_code == 200
     rows = r.json()
     assert len(rows) == 3
