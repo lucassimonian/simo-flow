@@ -90,6 +90,53 @@ pasting work at all can be revoked.
 - `Recorder.is_recording` replaces external reads of the private `_recording`
   attribute.
 
+### Fixed (from adversarial review of this release)
+
+Two differently-primed review agents attacked the branch before merge — one for
+security, one for correctness and concurrency. The security pass found no CRITICAL
+or HIGH; the correctness pass returned BLOCK on a real race. Every finding was
+verified independently before acting on it, and one was rejected as incorrect.
+
+- **A deliberate commit could be silently discarded.** Three paths end an
+  utterance — the discard timer, ✕, and ✓/release — and they coordinated via
+  `Timer.cancel()`, which does nothing once the timer body has begun running and
+  returns as though it had worked. Pressing ✓ at the moment the timer fired had
+  both threads call `recorder.end()`; the timer took the audio and the user's
+  "finish and paste" came back as "no audio captured". Consumers now agree through
+  a flag held under the existing lock.
+- **A failed paste destroyed the transcription.** Found while tracing the above:
+  the pipeline returned before writing to history, so a refused paste meant the
+  words were gone entirely. The dictation is now saved regardless, and the pill
+  says "saved to dashboard".
+- **A pid is not an identity.** `bundle_id` was captured on `fn`-down and never
+  read. Since macOS reuses pids and up to two seconds pass before the paste, a
+  quit-and-reissued pid could have activated an unrelated process and pasted into
+  it. Both fields are now compared — which also fixes the everyday case of a
+  transient system helper being frontmost at the instant of capture.
+- **The origin guard failed open.** It only rejected an `Origin` that was present
+  and unlisted, so a client omitting the header inherited full write access — and
+  for these endpoints that check is the only protection there is. It now falls back
+  to `Referer` and refuses a request carrying neither. That fallback is
+  load-bearing rather than defensive: `fetch()` omits `Origin` on same-origin GETs,
+  so the dashboard's own export request arrives with only a `Referer`.
+- **`/api/history/export` is now origin-guarded too.** The response was already
+  unreadable cross-origin, but an unbounded full-table read of every transcript is
+  worth denying as a *trigger* as well.
+- Added `test_no_cors_headers_are_ever_sent`: the unreadability of every read
+  endpoint rests entirely on the absence of `Access-Control-Allow-Origin`, and
+  nothing enforced that.
+- Closed a test gap: every activation test flipped focus synchronously, so the
+  polling loop's body had never actually executed.
+- Removed a condition-poll before `Cmd+V` that was provably true on its first
+  check (`NSPasteboard` writes are synchronous and in-process). It replaced a 50ms
+  sleep that was itself cargo; a no-op with a confident comment is worse than
+  neither.
+
+One review finding was **rejected**: the suggestion to wrap the export query in
+`run_in_threadpool` to avoid blocking the event loop. Every route handler here is
+a sync `def`, which FastAPI already dispatches to a threadpool — verified before
+changing anything.
+
 ### Notes
 
 - Repairing the venv's script shebangs may be needed if the repository was moved
