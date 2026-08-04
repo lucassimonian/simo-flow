@@ -95,7 +95,6 @@ def mac(monkeypatch):
     monkeypatch.setattr(inject, "_activate_pid", fake.activate_pid)
     monkeypatch.setattr(inject, "_post_key", fake.post_key)
     monkeypatch.setattr(inject, "RESTORE_DELAY", 0.0)
-    monkeypatch.setattr(inject, "SETTLE_DELAY", 0.0)
     monkeypatch.setattr(inject, "ACTIVATE_DELAY", 0.0)
     fake.inject = inject
     return fake
@@ -207,6 +206,52 @@ def test_activation_wait_returns_immediately_when_already_focused(mac):
     t0 = _t.perf_counter()
     assert mac.inject.paste_text("hello", focus=focus) is True
     assert (_t.perf_counter() - t0) < 0.05, "already-correct focus must not sleep"
+
+
+def test_activation_wait_polls_until_focus_actually_lands(mac, monkeypatch):
+    """Drive _wait_until through real iterations, not just its already-true branch.
+
+    Every other activation test flips the fake's focus synchronously, so the poll
+    loop's body was never executed — an accidental early return in it would have
+    gone unnoticed. Here focus arrives only on the third check, as a cold app
+    coming forward genuinely does.
+    """
+    focus = mac.inject.capture_focus()
+    mac.frontmost = 999
+    checks = {"n": 0}
+
+    def slow_focus():
+        checks["n"] += 1
+        if checks["n"] >= 3:  # lands on the third poll
+            return {"pid": 501, "bundle_id": "app.501"}
+        return {"pid": 999, "bundle_id": "app.999"}
+
+    def activate_without_moving_focus(pid):
+        mac.activated.append(pid)
+        return True  # macOS accepted it; focus follows a moment later
+
+    monkeypatch.setattr(mac.inject, "_capture_focus", slow_focus)
+    monkeypatch.setattr(mac.inject, "_activate_pid", activate_without_moving_focus)
+    monkeypatch.setattr(mac.inject, "ACTIVATE_DELAY", 1.0)
+
+    assert mac.inject.paste_text("hello", focus=focus) is True
+    assert checks["n"] >= 3, "the poll loop body must actually have run"
+    assert mac.keys, "the paste should proceed once focus lands"
+
+
+def test_pid_reuse_with_a_different_app_is_not_treated_as_the_same_window(mac, monkeypatch):
+    """A pid is not an identity. If the target quits and macOS reissues its pid to
+    an unrelated process, a pid-only match would paste the user's words into that
+    process — the very bug this module exists to prevent."""
+    focus = {"pid": 501, "bundle_id": "com.apple.TextEdit"}
+    # same pid, different app: the impostor is already frontmost
+    monkeypatch.setattr(
+        mac.inject, "_capture_focus", lambda: {"pid": 501, "bundle_id": "com.evil.app"}
+    )
+    monkeypatch.setattr(mac.inject, "ACTIVATE_DELAY", 0.02)
+    assert mac.inject.paste_text("secret words", focus=focus) is False
+    assert mac.clipboard == "old clipboard", "must not stage text for the wrong app"
+    assert mac.keys == []
 
 
 def test_paste_still_works_without_a_focus_snapshot(mac):

@@ -72,6 +72,9 @@ class SimoFlow(rumps.App):
         # own thread when it fires; the lock keeps cancel-vs-fire deterministic.
         self._pending_discard: threading.Timer | None = None
         self._tap_lock = threading.Lock()
+        # Exactly one of {discard timer, ✕, ✓/release} may consume a recording.
+        # See _claim_utterance for why Timer.cancel() can't be trusted for this.
+        self._consumed = False
         self._focus: dict | None = None  # window focused when recording started
         self._meter: rumps.Timer | None = None
         # one worker drains this queue, so pipelines never overlap and can't race
@@ -208,6 +211,8 @@ class SimoFlow(rumps.App):
                 self._pending_discard.cancel()
                 self._pending_discard = None
         if not self.recorder.is_recording:
+            with self._tap_lock:
+                self._consumed = False  # new utterance, up for grabs again
             self.recorder.begin()
             # Where the user is *now* is where the text belongs. By the time the
             # pipeline finishes (up to ~2s) they may have clicked elsewhere.
@@ -238,10 +243,33 @@ class SimoFlow(rumps.App):
         self._pending_discard = threading.Timer(DOUBLE_SEC, self._discard)
         self._pending_discard.start()
 
+    def _claim_utterance(self) -> bool:
+        """True only for the first caller to consume the current recording.
+
+        Three paths can end one utterance — the discard timer, ✕, and ✓/release —
+        and `Timer.cancel()` is not authoritative: once the timer body has started
+        running, cancel() does nothing and returns as if it had worked. Without a
+        shared flag, a ✓ pressed at the moment the timer fires had both threads
+        call `recorder.end()`; the timer took the audio and the user's deliberate
+        commit was reported as "no audio captured" and silently dropped.
+
+        So consumers agree through this flag rather than by cancelling. Cancelling
+        is still attempted, because skipping a timer that hasn't started is
+        cheaper than letting it run and lose the race.
+        """
+        with self._tap_lock:
+            if self._pending_discard is not None:
+                self._pending_discard.cancel()
+                self._pending_discard = None
+            if self._consumed:
+                return False
+            self._consumed = True
+            return True
+
     def _discard(self) -> None:
         """Runs on a threading.Timer thread — dispatch UI teardown to main."""
-        with self._tap_lock:
-            self._pending_discard = None
+        if not self._claim_utterance():
+            return  # ✓ or ✕ got here first; the audio is theirs
         if not self._locked:
             self.recorder.end()  # drop the audio
             self._on_main(self._hide_recording)
@@ -249,18 +277,14 @@ class SimoFlow(rumps.App):
     # ---- pill buttons (AppKit button actions — already on main) --------
     def _cancel_clicked(self) -> None:
         self._locked = False
-        if self._pending_discard:
-            self._pending_discard.cancel()
-            self._pending_discard = None
+        if not self._claim_utterance():
+            return
         self.recorder.end()  # drop the audio
         self._hide_recording()
 
     def _commit_clicked(self) -> None:
         self._locked = False
-        if self._pending_discard:
-            self._pending_discard.cancel()
-            self._pending_discard = None
-        self._commit()
+        self._commit()  # claims the utterance itself
 
     # ---- overlay ------------------------------------------------------
     def _show_recording(self) -> None:
@@ -284,6 +308,8 @@ class SimoFlow(rumps.App):
     def _commit(self) -> None:
         """Runs on the main runloop. Hands the utterance to the serialized
         worker; never runs the pipeline inline (would block the UI)."""
+        if not self._claim_utterance():
+            return  # the discard timer already took this recording
         self.status_item.title = READY_STATUS  # clear any "Recording…" lock text
         if self._meter and self._meter.is_alive():
             self._meter.stop()
@@ -325,15 +351,19 @@ class SimoFlow(rumps.App):
             else:
                 self.pill.busy("Polishing")
                 cleaned = polish.polish(raw)
-            if not inject.paste_text(cleaned, focus=focus):
-                # inject already logged the specific reason (no Accessibility
-                # permission, or the target app went away). Surface it rather
-                # than silently logging a successful-looking dictation.
-                self.pill.flash("couldn't paste — see log")
+            pasted = inject.paste_text(cleaned, focus=focus)
+            dt = (time.time() - t0) * 1000
+            # Recorded even when the paste failed. Returning early here used to
+            # skip this, so a refused paste (revoked Accessibility, target app
+            # gone) destroyed the transcription outright — the user had spoken,
+            # waited, and got nothing, with no copy anywhere. Saved, it is still
+            # recoverable from the dashboard.
+            store.log_dictation(raw, cleaned, int(dt), audio_sec=len(samples) / 16000)
+            if not pasted:
+                # inject already logged the specific reason.
+                self.pill.flash("couldn't paste — saved to dashboard")
                 self._ui_title(IDLE_TITLE)
                 return
-            dt = (time.time() - t0) * 1000
-            store.log_dictation(raw, cleaned, int(dt), audio_sec=len(samples) / 16000)
             print(f"[simo] {dt:.0f}ms exact={self.exact_mode} raw={raw!r} pasted={cleaned!r}", flush=True)
             self.pill.hide()
         except Exception as e:  # never crash the app on one bad utterance

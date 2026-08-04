@@ -40,7 +40,6 @@ KEY_V = 9  # kVK_ANSI_V
 KEY_CMD = 55  # kVK_Command
 
 RESTORE_DELAY = 0.3  # how long the target app gets to consume the paste
-SETTLE_DELAY = 0.05  # ceiling on waiting for our own pasteboard write to land
 ACTIVATE_DELAY = 0.35  # ceiling on waiting for the re-activated app to take focus
 _POLL = 0.005  # 5ms — one poll costs ~10µs, so this is free next to a sleep
 
@@ -153,6 +152,30 @@ def _press_cmd_v() -> None:
 
 
 # ---- public API ---------------------------------------------------------
+def _same_app(a: dict | None, b: dict | None) -> bool:
+    """Whether two focus snapshots are the same running application.
+
+    Bundle id is compared as well as pid, because a pid alone is not an identity.
+    macOS reuses pids, and up to two seconds pass between the snapshot and the
+    paste: if the target app quits in that window and its pid is reissued, a
+    pid-only match would activate an unrelated process and paste the user's words
+    into it — reintroducing the exact bug this module exists to prevent.
+
+    Both bundle ids being None (a process without one) falls back to pid equality;
+    that is the best available answer, not a silent guess.
+    """
+    if not a or not b:
+        return False
+    if a.get("pid") != b.get("pid"):
+        return False
+    return a.get("bundle_id") == b.get("bundle_id")
+
+
+def _describe(focus: dict) -> str:
+    """Human-readable focus target for log lines."""
+    return f"{focus.get('bundle_id') or 'pid ' + str(focus.get('pid'))} (pid {focus.get('pid')})"
+
+
 def capture_focus() -> dict | None:
     """Record where the user is at the moment they start dictating.
 
@@ -186,28 +209,24 @@ def paste_text(text: str, focus: dict | None = None, restore: bool = True) -> bo
 
     # Return to the window the user was in. Done before any clipboard write, so a
     # refusal (target app quit, trust revoked mid-flight) costs them nothing.
-    if focus and focus.get("pid"):
-        now = _capture_focus()
-        if now is None or now.get("pid") != focus["pid"]:
-            if not _activate_pid(focus["pid"]):
-                print(
-                    f"[simo] paste aborted — could not activate pid {focus['pid']} "
-                    "(did the app quit during transcription?); clipboard untouched",
-                    flush=True,
-                )
-                return False
-            # Continue the instant the app is genuinely frontmost, rather than
-            # after a fixed guess. Pasting before focus lands sends Cmd+V to the
-            # wrong window — the bug this whole path exists to prevent.
-            if not _wait_until(
-                lambda: (_capture_focus() or {}).get("pid") == focus["pid"], ACTIVATE_DELAY
-            ):
-                print(
-                    f"[simo] paste aborted — pid {focus['pid']} did not come to the "
-                    f"foreground within {ACTIVATE_DELAY * 1000:.0f}ms; clipboard untouched",
-                    flush=True,
-                )
-                return False
+    if focus and focus.get("pid") and not _same_app(_capture_focus(), focus):
+        if not _activate_pid(focus["pid"]):
+            print(
+                f"[simo] paste aborted — could not activate {_describe(focus)} "
+                "(did the app quit during transcription?); clipboard untouched",
+                flush=True,
+            )
+            return False
+        # Continue the instant the app is genuinely frontmost, rather than after a
+        # fixed guess. Pasting before focus lands sends Cmd+V to the wrong window —
+        # the bug this whole path exists to prevent.
+        if not _wait_until(lambda: _same_app(_capture_focus(), focus), ACTIVATE_DELAY):
+            print(
+                f"[simo] paste aborted — {_describe(focus)} did not come to the "
+                f"foreground within {ACTIVATE_DELAY * 1000:.0f}ms; clipboard untouched",
+                flush=True,
+            )
+            return False
 
     previous = _get_clipboard() if restore else None
     # A non-text clipboard (image, file, rich text) can't be read back, so it
@@ -215,12 +234,13 @@ def paste_text(text: str, focus: dict | None = None, restore: bool = True) -> bo
     # for clipboard-history tools to capture.
     had_nontext = restore and previous is None and _has_any_content()
 
-    before_write = _change_count()
     _set_clipboard(text)
-    expected = _change_count()  # our own write; anything past this isn't ours
-    # Don't key Cmd+V until the write is actually visible on the pasteboard —
-    # usually sub-millisecond, so this replaces a 50ms guess with ~0.
-    _wait_until(lambda: _change_count() != before_write, SETTLE_DELAY)
+    # Our own write; anything past this value isn't ours. No wait is needed before
+    # keying Cmd+V: NSPasteboard writes are synchronous and in-process, so the
+    # data is already on the pasteboard by the time _set_clipboard returns. (The
+    # original 50ms sleep here was cargo — and the condition-poll that briefly
+    # replaced it was provably true on its first check, every time.)
+    expected = _change_count()
     _press_cmd_v()
 
     if restore:

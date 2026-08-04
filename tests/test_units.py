@@ -347,6 +347,65 @@ def test_history_export_returns_every_row(client):
 
 
 # --------------------------------------------------------------------------
+# the utterance claim: exactly one of {discard timer, ✕, ✓/release} may consume a
+# recording. Timer.cancel() does nothing once the timer body has begun running,
+# so a ✓ pressed as the discard timer fired had both call recorder.end() — the
+# timer took the audio and the user's deliberate commit was reported as "no audio
+# captured" and dropped. Tested against the unbound method so no menu-bar app,
+# mic, or runloop is needed.
+# --------------------------------------------------------------------------
+def _claimable():
+    """Minimal stand-in carrying only the attributes _claim_utterance touches."""
+    import threading
+
+    class Bare:
+        pass
+
+    b = Bare()
+    b._tap_lock = threading.Lock()
+    b._pending_discard = None
+    b._consumed = False
+    return b
+
+
+def _claim(bare):
+    import importlib
+
+    return importlib.import_module("engine.__main__").SimoFlow._claim_utterance(bare)
+
+
+def test_only_the_first_consumer_claims_an_utterance():
+    bare = _claimable()
+    assert _claim(bare) is True, "first caller takes the recording"
+    assert _claim(bare) is False, "second caller must not also end the recording"
+    assert _claim(bare) is False
+
+
+def test_claiming_cancels_a_pending_discard_timer_and_clears_it():
+    import threading
+
+    bare = _claimable()
+    fired = []
+    bare._pending_discard = threading.Timer(5.0, lambda: fired.append(1))
+    bare._pending_discard.start()
+    try:
+        assert _claim(bare) is True
+        assert bare._pending_discard is None
+        assert fired == []
+    finally:
+        pass  # the timer was cancelled by the claim; nothing left to clean up
+
+
+def test_a_timer_that_already_fired_loses_to_whoever_claimed_first():
+    """The exact race: the discard timer's body has started, so cancel() is a
+    no-op. The flag — not cancel() — is what stops a double consume."""
+    bare = _claimable()
+    assert _claim(bare) is True  # ✓ got there first
+    bare._pending_discard = None  # timer already began; cancel() would do nothing
+    assert _claim(bare) is False, "the timer must not also end the recording"
+
+
+# --------------------------------------------------------------------------
 # polish: a failure here used to be completely silent, so a dead Ollama meant
 # unpolished output forever with no signal anywhere
 # --------------------------------------------------------------------------
