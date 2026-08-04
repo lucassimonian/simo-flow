@@ -68,7 +68,11 @@ class SimoFlow(rumps.App):
         self._t_down = 0.0
         self._t_last_tap = 0.0
         self._locked = False
+        # _pending_discard is written from the main runloop and from the Timer's
+        # own thread when it fires; the lock keeps cancel-vs-fire deterministic.
         self._pending_discard: threading.Timer | None = None
+        self._tap_lock = threading.Lock()
+        self._focus: dict | None = None  # window focused when recording started
         self._meter: rumps.Timer | None = None
         # one worker drains this queue, so pipelines never overlap and can't race
         # each other on the single system clipboard (would paste wrong text)
@@ -199,11 +203,15 @@ class SimoFlow(rumps.App):
         self._t_down = time.time()
         if self._locked:
             return  # stop handled on release
-        if self._pending_discard:  # second tap arriving — keep recording alive
-            self._pending_discard.cancel()
-            self._pending_discard = None
-        if not self.recorder._recording:
+        with self._tap_lock:
+            if self._pending_discard:  # second tap arriving — keep recording alive
+                self._pending_discard.cancel()
+                self._pending_discard = None
+        if not self.recorder.is_recording:
             self.recorder.begin()
+            # Where the user is *now* is where the text belongs. By the time the
+            # pipeline finishes (up to ~2s) they may have clicked elsewhere.
+            self._focus = inject.capture_focus()
         self._show_recording()
 
     def _on_release(self) -> None:
@@ -232,7 +240,8 @@ class SimoFlow(rumps.App):
 
     def _discard(self) -> None:
         """Runs on a threading.Timer thread — dispatch UI teardown to main."""
-        self._pending_discard = None
+        with self._tap_lock:
+            self._pending_discard = None
         if not self._locked:
             self.recorder.end()  # drop the audio
             self._on_main(self._hide_recording)
@@ -289,17 +298,20 @@ class SimoFlow(rumps.App):
             self.title = IDLE_TITLE
             return
         self.title = BUSY_TITLE
-        self.pill.busy()
-        self._work.put(samples)
+        self.pill.busy("Transcribing")
+        # The focus snapshot travels with the audio: the worker may run after the
+        # user has already moved on, and it needs where they *were*.
+        self._work.put((samples, self._focus))
+        self._focus = None
 
     def _worker(self) -> None:
         """Single background thread: one utterance processed at a time, in
         order. Serialization is what prevents two pastes racing the clipboard."""
         while True:
-            samples = self._work.get()
-            self._run_pipeline(samples)
+            samples, focus = self._work.get()
+            self._run_pipeline(samples, focus)
 
-    def _run_pipeline(self, samples) -> None:
+    def _run_pipeline(self, samples, focus: dict | None = None) -> None:
         t0 = time.time()
         try:
             raw = stt.transcribe(samples, initial_prompt=store.dictionary_prompt())
@@ -308,8 +320,18 @@ class SimoFlow(rumps.App):
                 self.pill.flash("no speech detected")
                 self._ui_title(IDLE_TITLE)
                 return
-            cleaned = raw if self.exact_mode else polish.polish(raw)
-            inject.paste_text(cleaned)
+            if self.exact_mode:
+                cleaned = raw
+            else:
+                self.pill.busy("Polishing")
+                cleaned = polish.polish(raw)
+            if not inject.paste_text(cleaned, focus=focus):
+                # inject already logged the specific reason (no Accessibility
+                # permission, or the target app went away). Surface it rather
+                # than silently logging a successful-looking dictation.
+                self.pill.flash("couldn't paste — see log")
+                self._ui_title(IDLE_TITLE)
+                return
             dt = (time.time() - t0) * 1000
             store.log_dictation(raw, cleaned, int(dt), audio_sec=len(samples) / 16000)
             print(f"[simo] {dt:.0f}ms exact={self.exact_mode} raw={raw!r} pasted={cleaned!r}", flush=True)
