@@ -11,6 +11,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # gitleaks scans history, not just the working tree
 
       - uses: actions/setup-python@v7
         with:
@@ -26,7 +28,28 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Byte-compile all modules
-        run: python -c "import py_compile, glob; [py_compile.compile(f, doraise=True) for f in glob.glob('engine/*.py')]"
+        run: |
+          python -c "import py_compile, glob; [py_compile.compile(f, doraise=True) for f in glob.glob('engine/*.py') + glob.glob('tools/*.py')]"
 
-      - name: Run unit tests
-        run: python -m pytest tests/test_units.py -q
+      # Bug-class rules only — undefined names, broken syntax, bad f-strings
+      # (config in pyproject.toml). Style is deliberately not gated: formatting
+      # is applied on save, and enforcing it retroactively would fail on files a
+      # given change never touched.
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check --output-format=github .
+
+      # Every hermetic test, not just one file — test_units.py alone used to run
+      # here, so the other suites could have rotted unnoticed. test_pipeline.py
+      # is excluded because it needs a real mic, the whisper models and a running
+      # Ollama; it is run by hand before a release.
+      - name: Run tests
+        run: python -m pytest tests/ --ignore=tests/test_pipeline.py
+
+      # The local DB and log hold the plaintext of everything ever dictated, so a
+      # leaked credential in this repo would matter more than most.
+      - name: Secret scan
+        run: |
+          brew install gitleaks
+          gitleaks detect --redact --no-banner --exit-code 1

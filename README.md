@@ -50,13 +50,16 @@ A local dashboard at `localhost:7331` — searchable history, insights (words pe
 
 - 🎙 **Push-to-talk**: hold `fn`, speak, release
 - 🔒 **Hands-free lock**: double-tap `fn` to keep recording, tap once to finish
-- 🌊 **Frosted-glass recording pill**: real macOS vibrancy with a live voice waveform, ✕ to cancel / ✓ to commit — without stealing focus from the app you're dictating into
+- 🌊 **Liquid Glass recording pill**: real `NSGlassEffectView` on macOS 26 (vibrancy fallback below it), with a live voice waveform and honest `Transcribing` / `Polishing` states, ✕ to cancel / ✓ to commit — without stealing focus from the app you're dictating into
 - 🎚 **Two model tiers**: Accurate (`large-v3-turbo`) or Fast (`base.en`), switch live from the menu
 - ✨ **Clean mode**: removes *um*s and false starts, fixes punctuation — keeps your hedges and wording (the LLM is explicitly forbidden from substituting words)
 - 🎯 **Exact mode**: verbatim whisper output, no LLM pass
 - 🔴 **Mic indicator only while dictating**: the stream opens on `fn` and closes the instant you finish, so macOS's mic indicator isn't lit while the app sits idle
 - 📊 **Dashboard** (`localhost:7331`): history feed with search, WPM / streak / activity insights, and a **Dictionary** that biases the speech model toward your names and jargon
+- 🎯 **Pastes where you started**: the focused window is snapshotted on `fn`-down and re-activated before pasting, so switching apps mid-transcription doesn't send your words to the wrong place
+- 📋 **Never eats your clipboard**: the pasteboard `changeCount` is checked before restoring, so a `Cmd+C` during transcription survives
 - 🗄 Everything stored in a local SQLite you own (`~/.simo-flow.db`, `0600`)
+- ⛨ **Privacy page**: export your full history as JSON, or delete all of it — your data has both an exit and an off switch
 
 ## Install
 
@@ -108,12 +111,13 @@ engine/hotkey.py     HID-level consuming CGEventTap
 engine/audio.py      on-demand mic capture, silence trim + silence guard
 engine/stt.py        whisper-server client + tiers, health-check/restart, orphan reaping
 engine/polish.py     LLM cleanup + deletion-only integrity guard (subsequence + content retention) + hedge few-shot
-engine/inject.py     clipboard set → Cmd+V → restore (non-text-safe)
+engine/inject.py     focus snapshot/restore → clipboard set → 4-event Cmd+V → guarded restore
 engine/store.py      SQLite (0600): history, dictionary, settings, insights
 engine/api.py        FastAPI on 127.0.0.1:7331 — Origin + Host guarded, zero external calls
 engine/static/       the dashboard (single self-contained HTML file, iCloud aesthetic)
-engine/overlay.py    the recording pill (NSVisualEffectView + live waveform)
+engine/overlay.py    the recording pill (Liquid Glass + scrim, live waveform, stage labels)
 simo                 control script + LaunchAgent (install/start/stop/restart/status/log)
+tools/               rehearse_paste.py (reproduce the wrong-window bug), pill_preview.py (render the pill over controlled backgrounds)
 tests/               assert-based per-module self-checks + full E2E
 ```
 
@@ -121,13 +125,18 @@ Every module runs standalone as its own self-check: `./.venv/bin/python -m engin
 
 ## Testing
 
-Two layers, split by what they need:
+Three layers, split by what they need:
 
-- **Unit tests** (`tests/test_units.py`) — pure logic with no mic, server, or GUI: the silence guard, junk-transcript filter, transcript dedupe, the dictation-integrity guard (a dictated question must never come back answered), the SQLite store, and the dashboard's `Origin`/`Host` security guards. These run in CI on every push.
+- **Unit tests** (`tests/test_units.py`, `tests/test_inject.py`) — pure logic with no mic, server, or GUI: the silence guard, junk-transcript filter, transcript dedupe, the SQLite store, the dashboard's `Origin`/`Host` guards, history delete/export, and the whole paste orchestration (focus restore, clipboard guard, the four-event `Cmd+V`, the Accessibility gate).
+- **Property tests** (`tests/test_polish_properties.py`) — Hypothesis generates thousands of transcripts and attacks the dictation-integrity guard with the four ways a chat model corrupts one: adding words, reordering, dropping a negator, collapsing to a keyword. Hand-picked examples missed a meaning-inverting bug once already; these state the contract instead. Verified to bite by disabling each check in turn and watching exactly one property fail.
 - **End-to-end** (`tests/test_pipeline.py`) + per-module self-checks — exercise the real mic → whisper → Ollama → paste path, so they need the hardware and servers and run locally, not in CI.
 
+The first two layers are hermetic and run in CI on every push, alongside lint and
+a secret scan.
+
 ```bash
-./.venv/bin/python -m pytest tests/test_units.py -q
+./.venv/bin/python -m pytest tests/ --ignore=tests/test_pipeline.py   # what CI runs
+./simo rehearse                                                       # rehearse the real paste path
 ```
 
 ## Limitations
