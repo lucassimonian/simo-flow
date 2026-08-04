@@ -60,6 +60,20 @@ def api_history(q: str = "", limit: int = 100):
     return store.history(limit=min(limit, 500), q=q)
 
 
+@app.get("/api/history/export")
+def api_history_export():
+    """Everything, including the raw transcripts — your data, takeable elsewhere.
+    Paired with DELETE below: a store of everything you have ever said needs both
+    an exit and an off switch, or the privacy promise is only a claim."""
+    return store.history_all()
+
+
+@app.delete("/api/history")
+def api_history_clear(request: Request):
+    _reject_cross_origin(request)
+    return {"deleted": store.clear_history()}
+
+
 @app.get("/api/insights")
 def api_insights():
     return store.insights()

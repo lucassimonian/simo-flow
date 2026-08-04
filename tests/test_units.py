@@ -257,3 +257,60 @@ def test_origin_guard_blocks_cross_origin_write(client):
     ok = client.post("/api/dictionary", json={"term": "legit"},
                      headers={**GOOD_HOST, "Origin": "http://127.0.0.1:7331"})
     assert ok.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# privacy: the history is a full plaintext record of everything ever dictated,
+# so deleting and exporting it must be reachable, not just implemented
+# --------------------------------------------------------------------------
+def test_history_can_be_deleted_through_the_api(client):
+    client.post("/api/dictionary", json={"term": "seed"},
+                headers={**GOOD_HOST, "Origin": "http://127.0.0.1:7331"})
+    from engine import store
+
+    store.log_dictation("um hello", "Hello.", 100, 1.0, "unit")
+    assert len(client.get("/api/history", headers=GOOD_HOST).json()) == 1
+
+    r = client.delete("/api/history", headers={**GOOD_HOST, "Origin": "http://127.0.0.1:7331"})
+    assert r.status_code == 200
+    assert r.json()["deleted"] == 1
+    assert client.get("/api/history", headers=GOOD_HOST).json() == []
+    # deleting history must not take the custom dictionary with it
+    assert any(t["term"] == "seed" for t in client.get("/api/dictionary", headers=GOOD_HOST).json())
+
+
+def test_history_delete_is_refused_cross_origin(client):
+    """A page the user is browsing must not be able to wipe their history."""
+    bad = client.delete("/api/history", headers={**GOOD_HOST, "Origin": "http://evil.com"})
+    assert bad.status_code == 403
+
+
+def test_history_export_returns_every_row(client):
+    from engine import store
+
+    for i in range(3):
+        store.log_dictation(f"raw {i}", f"Polished {i}.", 100, 1.0, "unit")
+    r = client.get("/api/history/export", headers=GOOD_HOST)
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 3
+    # export is for taking your data elsewhere: it must carry the raw transcript
+    # and timing, not just the cleaned text the feed shows
+    assert {"raw_text", "polished_text", "ts", "audio_sec"} <= set(rows[0])
+
+
+# --------------------------------------------------------------------------
+# polish: a failure here used to be completely silent, so a dead Ollama meant
+# unpolished output forever with no signal anywhere
+# --------------------------------------------------------------------------
+def test_polish_failure_is_logged_not_swallowed(monkeypatch, capsys):
+    from engine import polish as polish_mod
+
+    def boom(*_a, **_kw):
+        raise ConnectionError("ollama is not running")
+
+    monkeypatch.setattr(polish_mod.requests, "post", boom)
+    raw = "um so basically the quarterly report"
+    assert polish_mod.polish(raw) == raw  # still falls back to the user's words
+    out = capsys.readouterr().out.lower()
+    assert "polish" in out and "ollama is not running" in out
