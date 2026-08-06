@@ -75,6 +75,7 @@ class SimoFlow(rumps.App):
         # Exactly one of {discard timer, ✕, ✓/release} may consume a recording.
         # See _claim_utterance for why Timer.cancel() can't be trusted for this.
         self._consumed = False
+        self._fn_down = False  # fn physically held right now (see _claim_utterance)
         self._focus: dict | None = None  # window focused when recording started
         self._meter: rumps.Timer | None = None
         # one worker drains this queue, so pipelines never overlap and can't race
@@ -204,6 +205,8 @@ class SimoFlow(rumps.App):
     # ---- fn state machine (runs on the main runloop) -----------------
     def _on_press(self) -> None:
         self._t_down = time.time()
+        with self._tap_lock:
+            self._fn_down = True
         if self._locked:
             return  # stop handled on release
         with self._tap_lock:
@@ -220,6 +223,8 @@ class SimoFlow(rumps.App):
         self._show_recording()
 
     def _on_release(self) -> None:
+        with self._tap_lock:
+            self._fn_down = False
         now = time.time()
         held = now - self._t_down
 
@@ -243,7 +248,7 @@ class SimoFlow(rumps.App):
         self._pending_discard = threading.Timer(DOUBLE_SEC, self._discard)
         self._pending_discard.start()
 
-    def _claim_utterance(self) -> bool:
+    def _claim_utterance(self, *, skip_if_key_down: bool = False) -> bool:
         """True only for the first caller to consume the current recording.
 
         Three paths can end one utterance — the discard timer, ✕, and ✓/release —
@@ -261,6 +266,15 @@ class SimoFlow(rumps.App):
             if self._pending_discard is not None:
                 self._pending_discard.cancel()
                 self._pending_discard = None
+            # `skip_if_key_down` is the discard timer's guard. The timer's job is
+            # "no second tap arrived, so bin this" — but a tap that is physically
+            # still held *has* arrived; we just haven't seen its release yet. The
+            # timer firing in that gap would delete a recording the user is still
+            # speaking into, and the release would then engage the hands-free lock
+            # over nothing. Checked inside the same lock as the claim so the key
+            # state can't change between the two.
+            if skip_if_key_down and self._fn_down:
+                return False
             if self._consumed:
                 return False
             self._consumed = True
@@ -268,7 +282,7 @@ class SimoFlow(rumps.App):
 
     def _discard(self) -> None:
         """Runs on a threading.Timer thread — dispatch UI teardown to main."""
-        if not self._claim_utterance():
+        if not self._claim_utterance(skip_if_key_down=True):
             return  # ✓ or ✕ got here first; the audio is theirs
         if not self._locked:
             self.recorder.end()  # drop the audio
@@ -309,7 +323,11 @@ class SimoFlow(rumps.App):
         """Runs on the main runloop. Hands the utterance to the serialized
         worker; never runs the pipeline inline (would block the UI)."""
         if not self._claim_utterance():
-            return  # the discard timer already took this recording
+            # Someone else already ended this recording. Put the UI back rather
+            # than leaving "Recording — tap fn to stop" on screen for ever.
+            self.status_item.title = READY_STATUS
+            self.title = IDLE_TITLE
+            return
         self.status_item.title = READY_STATUS  # clear any "Recording…" lock text
         if self._meter and self._meter.is_alive():
             self._meter.stop()

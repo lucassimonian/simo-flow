@@ -365,13 +365,14 @@ def _claimable():
     b._tap_lock = threading.Lock()
     b._pending_discard = None
     b._consumed = False
+    b._fn_down = False
     return b
 
 
-def _claim(bare):
+def _claim(bare, **kw):
     import importlib
 
-    return importlib.import_module("engine.__main__").SimoFlow._claim_utterance(bare)
+    return importlib.import_module("engine.__main__").SimoFlow._claim_utterance(bare, **kw)
 
 
 def test_only_the_first_consumer_claims_an_utterance():
@@ -394,6 +395,32 @@ def test_claiming_cancels_a_pending_discard_timer_and_clears_it():
         assert fired == []
     finally:
         pass  # the timer was cancelled by the claim; nothing left to clean up
+
+
+def test_discard_timer_will_not_take_a_recording_while_fn_is_still_held():
+    """The interleaving that the first version of this fix made *worse*.
+
+    The discard timer fires 0.5s after a lone tap. If it lands in the gap between
+    the second tap of a double-tap going down and coming up, it used to claim and
+    delete the audio — and the release then engaged the hands-free lock over
+    nothing, so the user watched "Recording — tap fn to stop" and spoke into a
+    recording that no longer existed, with no error at all. A held key means the
+    tap has arrived; only its release decides what the recording becomes.
+    """
+    bare = _claimable()
+    bare._fn_down = True  # second tap is physically down, release not seen yet
+    assert _claim(bare, skip_if_key_down=True) is False
+    assert bare._consumed is False, "the release path must still be able to claim"
+    # once the key is up, the timer may have it
+    bare._fn_down = False
+    assert _claim(bare, skip_if_key_down=True) is True
+
+
+def test_key_down_guard_applies_only_to_the_discard_timer():
+    """✓ and ✕ are deliberate: they must work even with fn held."""
+    bare = _claimable()
+    bare._fn_down = True
+    assert _claim(bare) is True, "an explicit commit/cancel is never deferred"
 
 
 def test_a_timer_that_already_fired_loses_to_whoever_claimed_first():
