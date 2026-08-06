@@ -132,6 +132,17 @@ verified independently before acting on it, and one was rejected as incorrect.
   sleep that was itself cargo; a no-op with a confident comment is worse than
   neither.
 
+- **The claim fix was itself re-reviewed, and had made one interleaving worse.**
+  If the discard timer fires in the gap between the second tap of a double-tap
+  going down and coming up, it used to win the claim and delete the audio; the
+  release then engaged the hands-free lock over nothing, so the user saw
+  "Recording — tap fn to stop", spoke, and got complete silence — the claim was
+  already spent, so even the error flash was skipped. The timer now declines to
+  claim while `fn` is physically held, checked inside the same lock as the claim.
+  The reviewer's proposed fix (synchronising the `_locked` read) would not have
+  worked: at that instant `_locked` is legitimately still False. A lost claim also
+  restores the menu-bar title and status text, which is what made this invisible.
+
 One review finding was **rejected**: the suggestion to wrap the export query in
 `run_in_threadpool` to avoid blocking the event loop. Every route handler here is
 a sync `def`, which FastAPI already dispatches to a threadpool — verified before
