@@ -182,12 +182,17 @@ def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> st
             print(f"[simo] polish rejected as a rewrite, using raw transcript: {out!r}", flush=True)
             return raw_text
         return out or raw_text
-    except Exception:
-        return raw_text  # never block the paste on a polish failure
+    except Exception as e:
+        # Never block the paste on a polish failure — but never hide it either.
+        # Silent here meant a stopped Ollama or an evicted model degraded every
+        # dictation to raw output indefinitely, with no signal anywhere.
+        print(f"[simo] polish unavailable ({type(e).__name__}: {e}) — pasting raw transcript", flush=True)
+        return raw_text
 
 
 if __name__ == "__main__":
-    import sys, time
+    import sys
+    import time
     DEFAULT = "Um, so basically, I think we should meet at 3pm tomorrow to discuss the, you know, the quarterly report."
     sample = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
     t0 = time.time()

@@ -201,6 +201,14 @@
   .dict-add input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
   .dict-add button { padding: 12px 22px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font-size: 14px; font-weight: 500; font-family: var(--font); cursor: pointer; transition: background .18s var(--ease); }
   .dict-add button:hover { background: var(--accent-hover); }
+  /* Destructive actions read as destructive: outlined until hover, never a
+     primary-coloured button sitting next to a benign one. */
+  .panel.danger { border: 1px solid color-mix(in oklab, #d7263d 26%, transparent); }
+  .dict-add button.danger-btn { background: transparent; color: #d7263d;
+    border: 1px solid color-mix(in oklab, #d7263d 45%, transparent); }
+  .dict-add button.danger-btn:hover { background: #d7263d; color: #fff; border-color: #d7263d; }
+  .dict-add button.danger-btn:focus-visible { outline: 2px solid #d7263d; outline-offset: 2px; }
+  .dict-add .hint { margin-bottom: 0; align-self: center; }
   .chips { display: flex; flex-wrap: wrap; gap: 10px; }
   .chip { display: flex; align-items: center; gap: 9px; background: var(--card); border: 1px solid var(--line); border-radius: 980px; padding: 8px 10px 8px 16px; font-size: 14px; box-shadow: var(--shadow); animation: rise .38s var(--ease) forwards; transition: border-color .18s, transform .18s; }
   .chip:hover { border-color: var(--accent); transform: translateY(-1px); }
@@ -218,6 +226,7 @@
       <a data-p="home" class="active"><span class="ic">◐</span>Home</a>
       <a data-p="insights"><span class="ic">◫</span>Insights</a>
       <a data-p="dictionary"><span class="ic">✦</span>Dictionary</a>
+      <a data-p="privacy"><span class="ic">⛨</span>Privacy</a>
     </nav>
     <div class="side-foot">
       <div class="badge"><span class="pulse"></span><span><b>100% on-device</b>No cloud. No caps. Yours.</span></div>
@@ -261,6 +270,31 @@
         <button onclick="addTerm()">Add term</button>
       </div>
       <div class="chips rise" id="chips" style="animation-delay:150ms"></div>
+    </section>
+
+    <!-- PRIVACY -->
+    <section class="page" id="p-privacy">
+      <div class="head rise"><h1>Privacy</h1></div>
+      <p class="hint rise" style="animation-delay:70ms">Everything you dictate is stored on this Mac only, in a
+        file readable by you alone. Nothing is ever sent anywhere. <em>Your words, your disk, your call.</em></p>
+
+      <div class="panel rise" style="animation-delay:110ms">
+        <h3>Take your data with you</h3>
+        <div class="sub">Every dictation, including the original transcript before cleanup, as a JSON file.</div>
+        <div class="dict-add" style="margin-top:14px">
+          <button onclick="exportHistory()">Export history</button>
+        </div>
+      </div>
+
+      <div class="panel rise danger" style="animation-delay:160ms">
+        <h3>Delete your history</h3>
+        <div class="sub">Removes every stored dictation from this Mac permanently. Your dictionary and
+          settings are kept. <b>This cannot be undone.</b></div>
+        <div class="dict-add" style="margin-top:14px">
+          <button class="danger-btn" onclick="wipeHistory()">Delete all history</button>
+          <span class="hint" id="wipe-msg"></span>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -409,6 +443,24 @@ async function addTerm() {
 $('#new-term').addEventListener('keydown', e => e.key === 'Enter' && addTerm());
 async function delTerm(id) {
   renderChips(await (await fetch('/api/dictionary/' + id, {method: 'DELETE'})).json());
+}
+
+/* ---- privacy ---- */
+async function exportHistory() {
+  const rows = await (await fetch('/api/history/export')).json();
+  // Built and revoked client-side: the export never touches the network.
+  const url = URL.createObjectURL(new Blob([JSON.stringify(rows, null, 2)], {type: 'application/json'}));
+  const a = Object.assign(document.createElement('a'), {
+    href: url, download: `simo-flow-history-${new Date().toISOString().slice(0, 10)}.json`,
+  });
+  a.click(); URL.revokeObjectURL(url);
+}
+async function wipeHistory() {
+  const n = (await (await fetch('/api/history')).json()).length;
+  if (!confirm(`Permanently delete your dictation history?\n\nThis removes every stored dictation from this Mac and cannot be undone.\nYour dictionary and settings are kept.`)) return;
+  const r = await (await fetch('/api/history', {method: 'DELETE'})).json();
+  $('#wipe-msg').textContent = `Deleted ${r.deleted} dictation${r.deleted === 1 ? '' : 's'}.`;
+  loadFeed($('#q').value); loadRail();
 }
 
 /* ---- boot ---- */

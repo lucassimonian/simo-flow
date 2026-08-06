@@ -64,5 +64,6 @@ case "${1:-status}" in
     if launchctl list | grep -q "$LABEL"; then echo "running (LaunchAgent loaded)"; else echo "not running"; fi
     ;;
   log)     tail -n 40 -f "$LOG";;
-  *) echo "usage: ./simo {install|uninstall|open|start|stop|restart|status|log}"; exit 1;;
+  rehearse) shift; exec "$PY" "$ROOT/tools/rehearse_paste.py" "$@";;
+  *) echo "usage: ./simo {install|uninstall|open|start|stop|restart|status|log|rehearse}"; exit 1;;
 esac

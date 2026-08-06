@@ -1,0 +1,24 @@
+# Tooling config only — Simo Flow is run from its venv, not installed as a package.
+
+[tool.ruff]
+# 100, not ruff's default 88: this codebase was written to 100 and its comments
+# explain *why* at length. Lowering the limit would rewrap almost every file for
+# no benefit and bury real changes in cosmetic diff noise.
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# CI gates on bug-class rules only (see .github/workflows/ci.yml): undefined
+# names, broken syntax, f-string mistakes. Style is the formatter's job, and
+# formatting is applied on save rather than enforced retroactively.
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    "E402",  # module import not at top: deliberate in tools/ after sys.path setup
+    "E741",  # ambiguous name `l`: not present, kept off for terse drawing code
+]
+
+[tool.pytest.ini_options]
+# The hardware suite (real mic, whisper-server, Ollama) is opt-in: it cannot run
+# in CI and shouldn't run by default on a machine where the daemon is live.
+addopts = "-q"
+testpaths = ["tests"]

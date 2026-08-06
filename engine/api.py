@@ -3,7 +3,9 @@ import threading
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -31,10 +33,11 @@ async def _host_guard(request: Request, call_next):
 
 # The dashboard has no auth (localhost-only, by design), but a state-changing
 # request can still be forged cross-origin by any website the user visits while
-# the app runs (browsers send "simple" POSTs with no preflight). Reject writes
-# whose Origin isn't our own localhost. Same-origin fetches from the dashboard
-# send a matching Origin (or none, for direct navigation), so this is invisible
-# to legitimate use.
+# the app runs (browsers send "simple" POSTs with no preflight). Reject anything
+# whose Origin — or, for a same-origin GET, whose Referer — isn't our own
+# localhost. Note fetch() omits Origin on same-origin GETs, which is exactly why
+# _reject_cross_origin needs the Referer fallback: the dashboard's own export
+# request arrives with Referer and no Origin.
 _ALLOWED_ORIGINS = {
     f"http://127.0.0.1:{PORT}",
     f"http://localhost:{PORT}",
@@ -42,11 +45,33 @@ _ALLOWED_ORIGINS = {
 
 
 def _reject_cross_origin(request: Request) -> None:
-    origin = request.headers.get("origin")
-    if origin is not None and origin not in _ALLOWED_ORIGINS:
-        from fastapi import HTTPException
+    """Refuse a request that did not come from our own dashboard.
 
-        raise HTTPException(status_code=403, detail="cross-origin request refused")
+    Fails **closed**. The earlier version only rejected an Origin that was
+    present and unlisted, so a client omitting the header entirely inherited full
+    access — and for these endpoints this check is the only protection there is
+    (no auth, no CSRF token). A missing Origin therefore falls back to Referer,
+    and a request with neither is refused.
+
+    This stays invisible to real use: fetch() sends Origin on every request whose
+    method isn't GET/HEAD, including same-origin ones, so the dashboard's own
+    writes always carry it. An opaque origin (sandboxed iframe, file:// page)
+    sends the literal string "null", which is present and correctly unlisted.
+    """
+    origin = request.headers.get("origin")
+    if origin is not None:
+        if origin not in _ALLOWED_ORIGINS:
+            raise HTTPException(status_code=403, detail="cross-origin request refused")
+        return
+    referer = request.headers.get("referer")
+    if referer is not None:
+        parts = urlsplit(referer)
+        if f"{parts.scheme}://{parts.netloc}" not in _ALLOWED_ORIGINS:
+            raise HTTPException(status_code=403, detail="cross-origin request refused")
+        return
+    raise HTTPException(
+        status_code=403, detail="refused: request carried neither Origin nor Referer"
+    )
 
 
 @app.get("/")
@@ -58,6 +83,27 @@ def index():
 @app.get("/api/history")
 def api_history(q: str = "", limit: int = 100):
     return store.history(limit=min(limit, 500), q=q)
+
+
+@app.get("/api/history/export")
+def api_history_export(request: Request):
+    """Everything, including the raw transcripts — your data, takeable elsewhere.
+    Paired with DELETE below: a store of everything you have ever said needs both
+    an exit and an off switch, or the privacy promise is only a claim.
+
+    Origin-guarded despite being a read: the response is unreadable cross-origin
+    (no CORS headers are ever sent), but an unbounded full-table scan of every
+    transcript ever recorded is worth denying as a *trigger* too — fired in a loop
+    from a background tab it competes with the dictation pipeline for the GIL.
+    Nothing legitimate calls this cross-origin."""
+    _reject_cross_origin(request)
+    return store.history_all()
+
+
+@app.delete("/api/history")
+def api_history_clear(request: Request):
+    _reject_cross_origin(request)
+    return {"deleted": store.clear_history()}
 
 
 @app.get("/api/insights")

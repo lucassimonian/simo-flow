@@ -257,3 +257,193 @@ def test_origin_guard_blocks_cross_origin_write(client):
     ok = client.post("/api/dictionary", json={"term": "legit"},
                      headers={**GOOD_HOST, "Origin": "http://127.0.0.1:7331"})
     assert ok.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# privacy: the history is a full plaintext record of everything ever dictated,
+# so deleting and exporting it must be reachable, not just implemented
+# --------------------------------------------------------------------------
+def test_history_can_be_deleted_through_the_api(client):
+    client.post("/api/dictionary", json={"term": "seed"},
+                headers={**GOOD_HOST, "Origin": "http://127.0.0.1:7331"})
+    from engine import store
+
+    store.log_dictation("um hello", "Hello.", 100, 1.0, "unit")
+    assert len(client.get("/api/history", headers=GOOD_HOST).json()) == 1
+
+    r = client.delete("/api/history", headers={**GOOD_HOST, "Origin": "http://127.0.0.1:7331"})
+    assert r.status_code == 200
+    assert r.json()["deleted"] == 1
+    assert client.get("/api/history", headers=GOOD_HOST).json() == []
+    # deleting history must not take the custom dictionary with it
+    assert any(t["term"] == "seed" for t in client.get("/api/dictionary", headers=GOOD_HOST).json())
+
+
+def test_history_delete_is_refused_cross_origin(client):
+    """A page the user is browsing must not be able to wipe their history."""
+    bad = client.delete("/api/history", headers={**GOOD_HOST, "Origin": "http://evil.com"})
+    assert bad.status_code == 403
+
+
+SAME_ORIGIN = {**GOOD_HOST, "Origin": "http://127.0.0.1:7331"}
+# fetch() omits Origin on same-origin GETs, so this is what the dashboard's own
+# export request actually looks like on the wire.
+SAME_REFERER = {**GOOD_HOST, "Referer": "http://127.0.0.1:7331/#privacy"}
+
+
+def test_write_guard_fails_closed_without_origin_or_referer(client):
+    """A client that simply omits the header must not inherit write access — for
+    these endpoints this check is the only protection there is."""
+    assert client.delete("/api/history", headers=GOOD_HOST).status_code == 403
+    assert client.post("/api/dictionary", json={"term": "x"}, headers=GOOD_HOST).status_code == 403
+
+
+def test_write_guard_accepts_referer_when_origin_absent(client):
+    assert client.delete("/api/history", headers=SAME_REFERER).status_code == 200
+
+
+def test_write_guard_rejects_foreign_referer(client):
+    bad = {**GOOD_HOST, "Referer": "http://evil.com/page"}
+    assert client.delete("/api/history", headers=bad).status_code == 403
+
+
+def test_export_is_refused_cross_origin(client):
+    """Unreadable cross-origin anyway, but an unbounded full-table read is worth
+    denying as a trigger too."""
+    bad = {**GOOD_HOST, "Origin": "http://evil.com"}
+    assert client.get("/api/history/export", headers=bad).status_code == 403
+    assert client.get("/api/history/export", headers=GOOD_HOST).status_code == 403
+
+
+def test_export_works_the_way_the_dashboard_actually_calls_it(client):
+    """Guards the regression this pairs with: the dashboard's export is a
+    same-origin GET, which carries Referer and no Origin."""
+    assert client.get("/api/history/export", headers=SAME_REFERER).status_code == 200
+
+
+def test_no_cors_headers_are_ever_sent(client):
+    """A great deal rides on the *absence* of Access-Control-Allow-Origin: it is
+    what makes every read endpoint unreadable to a malicious page. Nothing else
+    enforces that, so assert it — adding permissive CORS middleware later would
+    silently open the entire history to any site the user visits."""
+    for path in ("/", "/api/history", "/api/history/export", "/api/insights", "/api/dictionary"):
+        r = client.get(path, headers={**SAME_REFERER, "Origin": "http://evil.com"})
+        assert "access-control-allow-origin" not in {k.lower() for k in r.headers}, path
+        assert "access-control-allow-credentials" not in {k.lower() for k in r.headers}, path
+
+
+def test_history_export_returns_every_row(client):
+    from engine import store
+
+    for i in range(3):
+        store.log_dictation(f"raw {i}", f"Polished {i}.", 100, 1.0, "unit")
+    r = client.get("/api/history/export", headers=SAME_REFERER)
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 3
+    # export is for taking your data elsewhere: it must carry the raw transcript
+    # and timing, not just the cleaned text the feed shows
+    assert {"raw_text", "polished_text", "ts", "audio_sec"} <= set(rows[0])
+
+
+# --------------------------------------------------------------------------
+# the utterance claim: exactly one of {discard timer, ✕, ✓/release} may consume a
+# recording. Timer.cancel() does nothing once the timer body has begun running,
+# so a ✓ pressed as the discard timer fired had both call recorder.end() — the
+# timer took the audio and the user's deliberate commit was reported as "no audio
+# captured" and dropped. Tested against the unbound method so no menu-bar app,
+# mic, or runloop is needed.
+# --------------------------------------------------------------------------
+def _claimable():
+    """Minimal stand-in carrying only the attributes _claim_utterance touches."""
+    import threading
+
+    class Bare:
+        pass
+
+    b = Bare()
+    b._tap_lock = threading.Lock()
+    b._pending_discard = None
+    b._consumed = False
+    b._fn_down = False
+    return b
+
+
+def _claim(bare, **kw):
+    import importlib
+
+    return importlib.import_module("engine.__main__").SimoFlow._claim_utterance(bare, **kw)
+
+
+def test_only_the_first_consumer_claims_an_utterance():
+    bare = _claimable()
+    assert _claim(bare) is True, "first caller takes the recording"
+    assert _claim(bare) is False, "second caller must not also end the recording"
+    assert _claim(bare) is False
+
+
+def test_claiming_cancels_a_pending_discard_timer_and_clears_it():
+    import threading
+
+    bare = _claimable()
+    fired = []
+    bare._pending_discard = threading.Timer(5.0, lambda: fired.append(1))
+    bare._pending_discard.start()
+    try:
+        assert _claim(bare) is True
+        assert bare._pending_discard is None
+        assert fired == []
+    finally:
+        pass  # the timer was cancelled by the claim; nothing left to clean up
+
+
+def test_discard_timer_will_not_take_a_recording_while_fn_is_still_held():
+    """The interleaving that the first version of this fix made *worse*.
+
+    The discard timer fires 0.5s after a lone tap. If it lands in the gap between
+    the second tap of a double-tap going down and coming up, it used to claim and
+    delete the audio — and the release then engaged the hands-free lock over
+    nothing, so the user watched "Recording — tap fn to stop" and spoke into a
+    recording that no longer existed, with no error at all. A held key means the
+    tap has arrived; only its release decides what the recording becomes.
+    """
+    bare = _claimable()
+    bare._fn_down = True  # second tap is physically down, release not seen yet
+    assert _claim(bare, skip_if_key_down=True) is False
+    assert bare._consumed is False, "the release path must still be able to claim"
+    # once the key is up, the timer may have it
+    bare._fn_down = False
+    assert _claim(bare, skip_if_key_down=True) is True
+
+
+def test_key_down_guard_applies_only_to_the_discard_timer():
+    """✓ and ✕ are deliberate: they must work even with fn held."""
+    bare = _claimable()
+    bare._fn_down = True
+    assert _claim(bare) is True, "an explicit commit/cancel is never deferred"
+
+
+def test_a_timer_that_already_fired_loses_to_whoever_claimed_first():
+    """The exact race: the discard timer's body has started, so cancel() is a
+    no-op. The flag — not cancel() — is what stops a double consume."""
+    bare = _claimable()
+    assert _claim(bare) is True  # ✓ got there first
+    bare._pending_discard = None  # timer already began; cancel() would do nothing
+    assert _claim(bare) is False, "the timer must not also end the recording"
+
+
+# --------------------------------------------------------------------------
+# polish: a failure here used to be completely silent, so a dead Ollama meant
+# unpolished output forever with no signal anywhere
+# --------------------------------------------------------------------------
+def test_polish_failure_is_logged_not_swallowed(monkeypatch, capsys):
+    from engine import polish as polish_mod
+
+    def boom(*_a, **_kw):
+        raise ConnectionError("ollama is not running")
+
+    monkeypatch.setattr(polish_mod.requests, "post", boom)
+    raw = "um so basically the quarterly report"
+    assert polish_mod.polish(raw) == raw  # still falls back to the user's words
+    out = capsys.readouterr().out.lower()
+    assert "polish" in out and "ollama is not running" in out

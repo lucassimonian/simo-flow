@@ -44,6 +44,13 @@ class Recorder:
             if self._recording:
                 self._chunks.append(mono)
 
+    @property
+    def is_recording(self) -> bool:
+        """Whether a capture is in progress. Callers asked `_recording` directly
+        before this existed, which leaked the lock discipline across modules."""
+        with self._lock:
+            return self._recording
+
     # ---- capture ---------------------------------------------------------
     def begin(self) -> None:
         """Hotkey down: open a fresh mic stream and start capturing.

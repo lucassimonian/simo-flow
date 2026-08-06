@@ -74,6 +74,15 @@ def history(limit: int = 100, q: str = "") -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def history_all() -> list[dict]:
+    """Every row, oldest first — for export. Unlike history() this is deliberately
+    unbounded: an export that silently truncated would be worse than slow."""
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute("SELECT * FROM history ORDER BY ts ASC, id ASC")
+        return [dict(r) for r in rows]
+
+
 def clear_history() -> int:
     """Delete all dictation history. Returns the number of rows removed.
     (The dictionary and settings are left intact.)"""
