@@ -367,7 +367,10 @@ class SimoFlow(rumps.App):
             if self.exact_mode:
                 cleaned = raw
             else:
-                self.pill.busy("Polishing")
+                # polish() owns the skip decision; needs_cleanup is consulted here
+                # only so the pill doesn't announce a stage that won't happen.
+                if polish.needs_cleanup(raw):
+                    self.pill.busy("Polishing")
                 cleaned = polish.polish(raw)
             # Stopped when the keystroke lands, not when paste_text returns:
             # the clipboard restore afterwards is housekeeping the user never
