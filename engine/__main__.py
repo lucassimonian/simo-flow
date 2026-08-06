@@ -369,8 +369,15 @@ class SimoFlow(rumps.App):
             else:
                 self.pill.busy("Polishing")
                 cleaned = polish.polish(raw)
-            pasted = inject.paste_text(cleaned, focus=focus)
-            dt = (time.time() - t0) * 1000
+            # Stopped when the keystroke lands, not when paste_text returns:
+            # the clipboard restore afterwards is housekeeping the user never
+            # waits for, and counting it made every reported latency ~300ms
+            # pessimistic.
+            seen_at: list[float] = []
+            pasted = inject.paste_text(
+                cleaned, focus=focus, on_pasted=lambda: seen_at.append(time.time())
+            )
+            dt = ((seen_at[0] if seen_at else time.time()) - t0) * 1000
             # Recorded even when the paste failed. Returning early here used to
             # skip this, so a refused paste (revoked Accessibility, target app
             # gone) destroyed the transcription outright — the user had spoken,
