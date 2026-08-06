@@ -4,6 +4,36 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] — 2026-08-06
+
+### Fixed
+
+- **Dictation pasted stray line breaks into the middle of your sentences.**
+  whisper.cpp does not return a plain string of speech — it returns the
+  transcript wrapped into fixed-width segments, so a long utterance arrived
+  broken by a newline roughly every 57 characters, mid-sentence, with the
+  continuation starting with a space. That was pasted verbatim. Measured against
+  real logged transcripts: **86% of them contained newlines.** Whitespace is now
+  flattened in `stt.transcribe()`, so the flat form is what history stores, what
+  exact mode pastes, and what the polish pass is asked to clean. The polish output
+  is flattened too, since a 3B model asked to fix punctuation will occasionally
+  re-wrap the text itself.
+
+- **Every log line was written twice, into a file nothing could rotate.** The
+  LaunchAgent redirected stdout and stderr to `~/.simo-flow.log`, which is the
+  same file the app tees into — so each line landed once from launchd and once
+  from the app. Because launchd held the file open, it also could not be rotated.
+  The result was 20MB of duplicated plaintext transcripts and growing. launchd now
+  writes to a separate `~/.simo-flow.boot.log`, which exists only to catch
+  failures that happen before the app can log for itself (a broken venv, a missing
+  interpreter). The app owns its own log and trims it to the most recent entries
+  once it passes 8MB, truncating in place rather than renaming so any other holder
+  of the file keeps writing to the right inode. An install predating this change
+  is detected at startup and reported rather than silently doubling output.
+
+  **This one needs `./simo install` to take effect** — it changes the LaunchAgent.
+  Permissions are unaffected: the interpreter path doesn't change.
+
 ## [2.1.0] — 2026-08-04
 
 Everything in this release comes from one wrong assumption: that the world holds

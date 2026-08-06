@@ -185,13 +185,23 @@ def capture_focus() -> dict | None:
     return _capture_focus()
 
 
-def paste_text(text: str, focus: dict | None = None, restore: bool = True) -> bool:
+def paste_text(
+    text: str,
+    focus: dict | None = None,
+    restore: bool = True,
+    on_pasted=None,
+) -> bool:
     """Paste `text` at the cursor. True only if the paste was delivered.
 
     `focus` is a snapshot from capture_focus() taken when recording began; the
     owning app is re-activated first so the text lands where the user started
     rather than wherever focus drifted. Every failure path returns False having
     left the user's clipboard exactly as it was.
+
+    `on_pasted` fires the instant the keystroke is delivered — before the restore
+    wait. That is the moment the user actually sees their text, and it is the only
+    honest thing to call the latency: timing the whole call instead adds ~300ms of
+    post-paste clipboard housekeeping the user never waits for.
     """
     if not text:
         return False
@@ -242,6 +252,8 @@ def paste_text(text: str, focus: dict | None = None, restore: bool = True) -> bo
     # replaced it was provably true on its first check, every time.)
     expected = _change_count()
     _press_cmd_v()
+    if on_pasted is not None:
+        on_pasted()  # the text is on screen now; everything below is cleanup
 
     if restore:
         time.sleep(RESTORE_DELAY)

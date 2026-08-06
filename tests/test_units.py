@@ -64,6 +64,44 @@ def test_recorder_accepts_real_speech():
 # --------------------------------------------------------------------------
 # stt: repetition dedupe (whisper artifact on noisy tails)
 # --------------------------------------------------------------------------
+def test_transcript_line_wrapping_is_flattened():
+    """whisper.cpp emits its transcript wrapped into ~57-character segments, so
+    the text arrives with newlines mid-sentence. Pasted verbatim that dropped
+    line breaks into the middle of dictated sentences — visible in 86% of real
+    transcripts. Dictation is a stream of speech, not a formatted document."""
+    from engine.stt import flatten_whitespace
+
+    wrapped = "I really appreciate you taking the time\n to respond to me."
+    assert flatten_whitespace(wrapped) == "I really appreciate you taking the time to respond to me."
+    # every flavour of break collapses to exactly one space
+    assert flatten_whitespace("a\r\nb\tc  d\n\n\ne") == "a b c d e"
+    assert flatten_whitespace("  padded  ") == "padded"
+    assert flatten_whitespace("") == ""
+
+
+def test_transcribe_flattens_before_returning(monkeypatch):
+    """The flattening has to happen in transcribe(), not at the paste site: the
+    history, the exact-mode path and the polish input all read from here."""
+    import engine.stt as stt
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"text": "first part of the line\n and the wrapped remainder."}
+
+    monkeypatch.setattr(stt, "is_up", lambda: True)
+    monkeypatch.setattr(stt, "requests", type("R", (), {"post": staticmethod(lambda *a, **k: FakeResponse())}))
+    import numpy as np
+
+    out = stt.transcribe(np.zeros(16000, dtype=np.float32))
+    assert "\n" not in out
+    assert out == "first part of the line and the wrapped remainder."
+
+
 def test_dedupe_collapses_consecutive_duplicates():
     from engine.stt import dedupe_sentences
 
@@ -430,6 +468,71 @@ def test_a_timer_that_already_fired_loses_to_whoever_claimed_first():
     assert _claim(bare) is True  # ✓ got there first
     bare._pending_discard = None  # timer already began; cancel() would do nothing
     assert _claim(bare) is False, "the timer must not also end the recording"
+
+
+# --------------------------------------------------------------------------
+# the log holds the plaintext of everything ever dictated, so it must not grow
+# without bound — and it must not be written twice per line
+# --------------------------------------------------------------------------
+def _mainmod():
+    import importlib
+
+    return importlib.import_module("engine.__main__")
+
+
+def test_log_is_trimmed_once_it_exceeds_the_cap(tmp_path):
+    m = _mainmod()
+    log = tmp_path / "big.log"
+    line = b"x" * 999 + b"\n"
+    log.write_bytes(line * 12_000)  # ~12MB
+    assert log.stat().st_size > m.MAX_LOG_BYTES
+
+    assert m._trim_log(str(log), max_bytes=m.MAX_LOG_BYTES, keep_bytes=m.KEEP_LOG_BYTES) is True
+    size = log.stat().st_size
+    assert size <= m.KEEP_LOG_BYTES + 4096, "must shrink to roughly the keep size"
+    body = log.read_bytes()
+    assert b"trimmed" in body.split(b"\n", 1)[0], "says why it is shorter than you expect"
+    assert body.endswith(line), "the newest lines are the ones worth keeping"
+
+
+def test_log_under_the_cap_is_left_completely_alone(tmp_path):
+    m = _mainmod()
+    log = tmp_path / "small.log"
+    log.write_bytes(b"one line\n")
+    assert m._trim_log(str(log), max_bytes=m.MAX_LOG_BYTES, keep_bytes=m.KEEP_LOG_BYTES) is False
+    assert log.read_bytes() == b"one line\n"
+
+
+def test_trimming_keeps_the_log_owner_only(tmp_path):
+    """It is a verbatim record of everything spoken — 0600 is not optional."""
+    import os
+    import stat
+
+    m = _mainmod()
+    log = tmp_path / "perm.log"
+    log.write_bytes(b"y" * (m.MAX_LOG_BYTES + 5000))
+    os.chmod(log, 0o644)  # as an older install left it
+    m._trim_log(str(log), max_bytes=m.MAX_LOG_BYTES, keep_bytes=m.KEEP_LOG_BYTES)
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+def test_trim_survives_a_missing_log(tmp_path):
+    m = _mainmod()
+    assert m._trim_log(str(tmp_path / "nope.log")) is False
+
+
+def test_same_file_detects_a_stream_already_pointed_at_the_log(tmp_path):
+    """launchd used to redirect stdout to the very file we tee into, so every
+    line landed twice. Detecting that is what stops the duplication."""
+    m = _mainmod()
+    log = tmp_path / "dup.log"
+    other = tmp_path / "other.log"
+    log.write_text("")
+    other.write_text("")
+    with open(log, "a") as a, open(other, "a") as b:
+        assert m._same_file(a, str(log)) is True
+        assert m._same_file(b, str(log)) is False
+    assert m._same_file(None, str(log)) is False  # no stream at all under launchd
 
 
 # --------------------------------------------------------------------------

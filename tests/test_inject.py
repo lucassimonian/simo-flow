@@ -254,6 +254,21 @@ def test_pid_reuse_with_a_different_app_is_not_treated_as_the_same_window(mac, m
     assert mac.keys == []
 
 
+def test_on_pasted_fires_when_the_text_lands_not_when_cleanup_finishes(mac, monkeypatch):
+    """The callback is what the reported latency is measured against, so it has to
+    mark the moment the user sees their text. Timing the whole call instead
+    counted ~300ms of clipboard housekeeping nobody waits for."""
+    monkeypatch.setattr(mac.inject, "RESTORE_DELAY", 0.05)
+    order = []
+    monkeypatch.setattr(
+        mac.inject, "_set_clipboard", lambda t: (order.append(f"set:{t}"), mac.set_clipboard(t))[1]
+    )
+    mac.inject.paste_text("hello", on_pasted=lambda: order.append("pasted"))
+    assert order.index("pasted") > order.index("set:hello"), "fires after the keystroke"
+    assert order[-1] != "pasted", "the clipboard restore must still happen afterwards"
+    assert order[-1].startswith("set:old"), "and it is the restore that comes last"
+
+
 def test_paste_still_works_without_a_focus_snapshot(mac):
     """Backwards compatible: no snapshot means paste wherever we are."""
     assert mac.inject.paste_text("hello") is True

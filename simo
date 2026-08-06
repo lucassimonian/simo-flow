@@ -9,6 +9,7 @@ PY="$ROOT/.venv/bin/python"
 LABEL="com.lucassimonian.simoflow"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/.simo-flow.log"
+BOOTLOG="$HOME/.simo-flow.boot.log"  # launchd-owned; pre-startup failures only
 
 write_plist() {
   cat > "$PLIST" <<EOF
@@ -33,8 +34,14 @@ write_plist() {
        exits 0 and stays quit — a Quit button that quits. -->
   <key>KeepAlive</key>
   <dict><key>SuccessfulExit</key><false/></dict>
-  <key>StandardOutPath</key><string>$LOG</string>
-  <key>StandardErrorPath</key><string>$LOG</string>
+  <!-- Deliberately NOT \$LOG. The app tees its own stdout/stderr into \$LOG and
+       trims it; pointing launchd at the same file made every line appear twice
+       and left a file nothing could rotate (launchd holds the fd open). This
+       boot log only catches failures that happen before _tee_logs() runs — a
+       broken venv, a missing interpreter — which is the one thing the app
+       cannot log for itself. -->
+  <key>StandardOutPath</key><string>$BOOTLOG</string>
+  <key>StandardErrorPath</key><string>$BOOTLOG</string>
   <key>ProcessType</key><string>Interactive</string>
 </dict>
 </plist>
