@@ -166,7 +166,24 @@ def transcribe(samples: np.ndarray, initial_prompt: str = "", rate: int = 16000)
         timeout=60,
     )
     r.raise_for_status()
-    return dedupe_sentences(r.json().get("text", "").strip())
+    return dedupe_sentences(flatten_whitespace(r.json().get("text", "")))
+
+
+def flatten_whitespace(text: str) -> str:
+    """Collapse every run of whitespace — newlines included — into one space.
+
+    whisper.cpp does not return a plain string of speech: it returns its
+    transcript wrapped into fixed-width segments, so a long utterance arrives
+    broken by newlines every ~57 characters, mid-sentence, with the continuation
+    starting with a space. Pasted verbatim, that dropped hard line breaks into
+    the middle of dictated sentences — present in 86% of real transcripts before
+    this existed.
+
+    Applied here rather than at the paste site so the flat form is what the
+    history stores, what exact mode pastes, and what the polish pass is asked to
+    clean. Dictation is a stream of speech; a user who wants a line break says so.
+    """
+    return " ".join(text.split())
 
 
 def dedupe_sentences(text: str) -> str:

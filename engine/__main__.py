@@ -404,17 +404,77 @@ def _acquire_singleton() -> object:
     return lock  # keep a reference so the fd stays open
 
 
+LOG_PATH = "~/.simo-flow.log"
+# The log is a verbatim record of everything ever dictated, so it can't grow for
+# ever. Trimmed at startup rather than on a timer: it's the one moment nothing
+# else is writing, and a dictation app is restarted often enough.
+MAX_LOG_BYTES = 8_000_000
+KEEP_LOG_BYTES = 2_000_000
+
+
+def _same_file(stream, path: str) -> bool:
+    """Whether `stream` is already writing to `path` (same device + inode).
+
+    The LaunchAgent used to redirect stdout and stderr to the very file
+    _tee_logs() opens, so every line was written twice — once by launchd, once by
+    us — doubling a file that already held plaintext transcripts. The plist no
+    longer does that, but an install that predates the change still will, so the
+    duplication is detected rather than assumed away.
+    """
+    import os
+
+    try:
+        a = os.fstat(stream.fileno())
+        b = os.stat(path)
+    except (OSError, ValueError, AttributeError):
+        return False  # no stream (launchd), closed fd, or nothing at that path
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def _trim_log(path: str, max_bytes: int = MAX_LOG_BYTES, keep_bytes: int = KEEP_LOG_BYTES) -> bool:
+    """Keep the newest `keep_bytes` once the log passes `max_bytes`. True if trimmed.
+
+    Truncates in place instead of renaming: another writer may hold this file
+    open, and a renamed inode would keep receiving their writes while the fresh
+    file stayed empty.
+    """
+    import os
+
+    try:
+        if os.path.getsize(path) <= max_bytes:
+            return False
+        with open(path, "rb") as f:
+            f.seek(-keep_bytes, os.SEEK_END)
+            f.readline()  # drop the partial line we landed in the middle of
+            tail = f.read()
+        with open(path, "wb") as f:  # truncates the existing inode
+            f.write(b"[simo] log trimmed to the most recent entries\n")
+            f.write(tail)
+        os.chmod(path, 0o600)
+        return True
+    except OSError:
+        return False  # a log we can't trim must never stop the app starting
+
+
 def _tee_logs() -> None:
     """Mirror stdout/stderr to ~/.simo-flow.log so failures survive a closed
     terminal (or a .app launch with no terminal at all). The log holds plaintext
-    transcripts, so it is created 0600 (owner-only)."""
+    transcripts, so it is created 0600 (owner-only) and trimmed when oversized."""
     import os
     import sys
 
-    path = os.path.expanduser("~/.simo-flow.log")
+    path = os.path.expanduser(LOG_PATH)
+    _trim_log(path)
     fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
     os.chmod(path, 0o600)  # tighten even if it pre-existed world-readable
     log = os.fdopen(fd, "a", buffering=1)
+    # An older LaunchAgent points stdout/stderr here too. Adding our handle on top
+    # of that writes every line twice, so in that case let the real stream be the
+    # only writer.
+    if _same_file(sys.__stdout__, path) or _same_file(sys.__stderr__, path):
+        print("[simo] launchd already logs to this file — run ./simo install to "
+              "stop every line being recorded twice", file=sys.__stdout__, flush=True)
+        return
 
     class _Tee:
         def __init__(self, real, *extra):

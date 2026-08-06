@@ -171,7 +171,11 @@ def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> st
             timeout=timeout,
         )
         r.raise_for_status()
-        out = r.json()["message"]["content"].strip()
+        # Flattened for the same reason the transcript is (see
+        # stt.flatten_whitespace): a 3B model asked to "fix punctuation" will
+        # occasionally return the text wrapped, and that would paste hard line
+        # breaks into the middle of a dictated sentence.
+        out = " ".join(r.json()["message"]["content"].split())
         # ponytail: strip accidental wrapping quotes, the only 3B misfire seen in testing
         if len(out) > 1 and out[0] == out[-1] and out[0] in "\"'":
             out = out[1:-1]
