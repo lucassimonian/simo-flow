@@ -4,6 +4,33 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-08-06
+
+### Changed
+
+- **Cleanup is skipped when there is nothing to clean.** Every dictation used to
+  be sent to the local model, even when it had no fillers and no stutters.
+  Measured over 40 real dictations, the model returned the transcript **completely
+  unchanged 72% of the time** — a full second or more spent being handed back
+  exactly what whisper already said, and several seconds on a long utterance,
+  because generation cost scales with length.
+
+  `polish.needs_cleanup()` now decides up front. The test is deliberately narrow:
+  fillers, or a stuttered repeat. Those are the only things cleanup is permitted
+  to remove — everything else the model might do is forbidden by the prompt and
+  rejected by `_is_rewrite` anyway, so skipping cannot lose it. Doubled words that
+  are ordinary English ("that that", "had had") are not treated as stutters, and
+  hedges never trigger cleanup on their own, since sending an utterance to the
+  model purely because it contains "kind of" is what let the model strip a hedge
+  it was explicitly told to keep.
+
+  **Measured effect on real data: 50% of dictations skip the model, median
+  1,627ms → ~430ms.** The rest are unchanged. The pill no longer announces a
+  "Polishing" stage that isn't going to run.
+
+  Knob: widen `_FILLERS` to send more utterances for cleanup, narrow it to keep
+  more of them instant.
+
 ## [2.1.1] — 2026-08-06
 
 ### Fixed

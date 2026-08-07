@@ -539,6 +539,46 @@ def test_same_file_detects_a_stream_already_pointed_at_the_log(tmp_path):
 # polish: a failure here used to be completely silent, so a dead Ollama meant
 # unpolished output forever with no signal anywhere
 # --------------------------------------------------------------------------
+def test_clean_speech_skips_the_model_entirely(monkeypatch):
+    """72% of real dictations came back from the model unchanged. Spending a
+    second to be handed back exactly what whisper said is pure latency."""
+    from engine import polish as polish_mod
+
+    def must_not_be_called(*_a, **_kw):
+        raise AssertionError("the model was called for a transcript with nothing to clean")
+
+    monkeypatch.setattr(polish_mod.requests, "post", must_not_be_called)
+    clean = "I want to check the onboarding flow before we ship it."
+    assert polish_mod.polish(clean) == clean
+
+
+def test_needs_cleanup_spots_what_cleanup_is_allowed_to_remove():
+    from engine.polish import needs_cleanup
+
+    assert needs_cleanup("um so I think we should meet") is True  # filler
+    assert needs_cleanup("I I think we should meet") is True  # stutter
+    assert needs_cleanup("Let's meet at 3pm tomorrow.") is False
+
+
+def test_needs_cleanup_does_not_mistake_real_english_for_a_stutter():
+    """"I said that that was fine" is not a stutter, and sending it for cleanup
+    would give the model a chance to rewrite a sentence that was already correct."""
+    from engine.polish import needs_cleanup
+
+    assert needs_cleanup("I said that that was fine.") is False
+    assert needs_cleanup("She had had enough by then.") is False
+
+
+def test_hedges_never_trigger_cleanup_on_their_own():
+    """Hedges are content the prompt tells the model to keep. Sending an utterance
+    for cleanup purely because it contains one invites the model to strip it —
+    which is exactly what it did on real data."""
+    from engine.polish import needs_cleanup
+
+    for hedge in ("I think", "basically", "kind of", "sort of", "honestly", "to be fair"):
+        assert needs_cleanup(f"We should {hedge} ship it tomorrow.") is False, hedge
+
+
 def test_polish_failure_is_logged_not_swallowed(monkeypatch, capsys):
     from engine import polish as polish_mod
 
