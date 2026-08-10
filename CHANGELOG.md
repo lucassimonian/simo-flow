@@ -4,6 +4,33 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] — 2026-08-10
+
+### Fixed
+
+- **Dictation stopped working entirely after AirPods connected, and stayed broken
+  until the app was restarted by hand.** Twelve consecutive
+  `Internal PortAudio error [PaErrorCode -9986]` in the log, with CoreAudio
+  reporting `err='-10851'`. PortAudio caches its device list at initialisation, so
+  a microphone appearing or disappearing mid-session left the daemon asking for a
+  device that had moved — in a fresh process every sample rate opened fine, which
+  is what made it look like a hardware fault.
+
+  The failure was terminal by construction: `begin()` caught the exception and
+  gave up. `_needs_reinit` already existed and would have fixed it, but was only
+  ever set after a *silent capture*, never after a *failed open*. A failed open now
+  re-initialises PortAudio and retries once, and sets `_needs_reinit` if that fails
+  too, so the next press starts from a clean list rather than repeating a
+  known-broken one.
+
+  Not a regression: the only change v2.1.0–v2.2.0 made to `audio.py` was adding a
+  read-only `is_recording` property.
+
+- **A mic that never opened reported "no audio captured"** — which reads as *you
+  didn't speak*, and sends you to check your microphone instead of the log. That
+  case now says "microphone unavailable" and is tracked separately from genuinely
+  hearing nothing.
+
 ## [2.2.0] — 2026-08-06
 
 ### Changed
