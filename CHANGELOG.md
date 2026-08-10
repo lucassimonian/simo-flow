@@ -26,6 +26,14 @@ All notable changes to Simo Flow are documented here. Format follows
   Not a regression: the only change v2.1.0–v2.2.0 made to `audio.py` was adding a
   read-only `is_recording` property.
 
+- **Switching microphone mid-session is now a non-event, not a recovered failure.**
+  Recovering after an error still means one press behaves oddly, which is not good
+  enough for a device you connect several times a day. The current default input
+  device is now read straight from CoreAudio — the one source PortAudio's cache
+  cannot make stale — and the list is refreshed *before* asking for a device that
+  moved. One property read, so it costs nothing on the common path where nothing
+  has changed. Connect or disconnect AirPods and the next press simply works.
+
 - **A mic that never opened reported "no audio captured"** — which reads as *you
   didn't speak*, and sends you to check your microphone instead of the log. That
   case now says "microphone unavailable" and is tracked separately from genuinely

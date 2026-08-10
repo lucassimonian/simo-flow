@@ -30,6 +30,87 @@ def test_trim_silence_strips_quiet_edges():
     assert len(trimmed) >= len(speech) * 0.8  # didn't eat the speech
 
 
+def _fake_audio(monkeypatch, device_ids):
+    """Recorder with a stubbed stream and a scripted sequence of device ids."""
+    import engine.audio as audio_mod
+
+    calls = {"reinit": 0, "open": 0}
+
+    class FakeStream:
+        def __init__(self, **kw):
+            calls["open"] += 1
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(audio_mod.sd, "InputStream", FakeStream)
+    monkeypatch.setattr(audio_mod.sd, "_terminate", lambda: calls.__setitem__("reinit", calls["reinit"] + 1))
+    monkeypatch.setattr(audio_mod.sd, "_initialize", lambda: None)
+    seq = list(device_ids)
+    monkeypatch.setattr(audio_mod, "default_input_device", lambda: seq.pop(0) if seq else None)
+    return audio_mod.Recorder(), calls
+
+
+def test_a_changed_input_device_is_handled_before_it_can_fail(monkeypatch):
+    """AirPods connecting must be a non-event, not a failed press that recovers.
+
+    PortAudio's cached device list is refreshed *before* we ask it for a device
+    that moved — detected by reading the current default straight from CoreAudio,
+    which is the one source the cache can't make stale.
+    """
+    rec, calls = _fake_audio(monkeypatch, device_ids=[78, 91])  # built-in, then AirPods
+    rec.begin()  # first ever open: no previous device, so a refresh is expected
+    rec.end()
+    baseline = calls["reinit"]
+    rec.begin()  # device id changed underneath us
+    assert calls["reinit"] == baseline + 1, "a changed device must refresh the list up front"
+    assert rec.is_recording is True, "and the press must just work — no failure, no retry"
+
+
+def test_an_unchanged_device_costs_nothing(monkeypatch):
+    """The check is on the first-word latency path, so it must not re-initialise
+    PortAudio when nothing has moved — that used to cost ~70ms per press."""
+    rec, calls = _fake_audio(monkeypatch, device_ids=[78, 78, 78])
+    rec.begin()
+    rec.end()
+    baseline = calls["reinit"]
+    rec.begin()
+    assert calls["reinit"] == baseline, "no device change means no re-initialisation"
+
+
+def test_device_detection_degrades_quietly_when_coreaudio_is_unavailable(monkeypatch):
+    """If the framework can't be read we must still record, falling back to the
+    reactive retry rather than refusing to open or thrashing the device list."""
+    rec, calls = _fake_audio(monkeypatch, device_ids=[None, None])
+    rec.begin()
+    assert rec.is_recording is True
+    rec.end()
+    baseline = calls["reinit"]
+    rec.begin()
+    assert calls["reinit"] == baseline, "an unknown device id must not look like a change"
+
+
+def test_default_input_device_answers_on_a_machine_with_a_microphone():
+    """Guards the ctypes plumbing: a wrong fourcc or struct layout would return
+    None everywhere and silently disable device-change detection, with every
+    mocked test still passing. Skipped where there is no input device at all —
+    CI runners have none, and failing there would say nothing about the code."""
+    import sounddevice as sd
+
+    from engine.audio import default_input_device
+
+    if not any(d["max_input_channels"] > 0 for d in sd.query_devices()):
+        pytest.skip("no input device on this machine")
+    dev = default_input_device()
+    assert isinstance(dev, int) and dev > 0, f"CoreAudio returned {dev!r}"
+
+
 def test_mic_recovers_when_portaudios_device_list_went_stale(monkeypatch, capsys):
     """Connecting or removing a mic (AirPods) while the app runs leaves
     PortAudio's cached device list stale, and opening the stream then fails with

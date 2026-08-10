@@ -23,6 +23,67 @@ MIN_UTTERANCE_SEC = 0.3  # discard accidental taps shorter than this
 SILENCE_RMS = 0.004  # whole utterance quieter than this = no speech, never paste it
 
 
+def _load_coreaudio():
+    """CoreAudio, for asking macOS which input device is current *right now*.
+
+    PortAudio caches its device list at initialisation, so it cannot answer this:
+    the cache is the very thing that goes stale when AirPods connect. Reading the
+    property straight from CoreAudio bypasses that and costs microseconds.
+
+    Returns None if the framework can't be loaded, in which case device-change
+    detection is skipped and the reactive retry in begin() is the only safety net.
+    """
+    try:
+        import ctypes
+        import ctypes.util
+
+        path = ctypes.util.find_library("CoreAudio")
+        if not path:
+            return None
+        lib = ctypes.cdll.LoadLibrary(path)
+
+        class _Address(ctypes.Structure):
+            _fields_ = [
+                ("mSelector", ctypes.c_uint32),
+                ("mScope", ctypes.c_uint32),
+                ("mElement", ctypes.c_uint32),
+            ]
+
+        fourcc = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
+        # kAudioHardwarePropertyDefaultInputDevice / kAudioObjectPropertyScopeGlobal
+        return lib, _Address(fourcc("dIn "), fourcc("glob"), 0), ctypes
+    except Exception:
+        return None
+
+
+_COREAUDIO = _load_coreaudio()
+
+
+def default_input_device() -> int | None:
+    """The id of the input device macOS would use right now, or None if unknown.
+
+    Deliberately not routed through sounddevice: PortAudio would answer from the
+    same cache we are trying to check.
+    """
+    if _COREAUDIO is None:
+        return None
+    lib, address, ctypes = _COREAUDIO
+    try:
+        dev = ctypes.c_uint32(0)
+        size = ctypes.c_uint32(4)
+        err = lib.AudioObjectGetPropertyData(
+            ctypes.c_uint32(1),  # kAudioObjectSystemObject
+            ctypes.byref(address),
+            0,
+            None,
+            ctypes.byref(size),
+            ctypes.byref(dev),
+        )
+        return dev.value if err == 0 else None
+    except Exception:
+        return None
+
+
 class Recorder:
     def __init__(self) -> None:
         self._chunks: list[np.ndarray] = []
@@ -33,6 +94,7 @@ class Recorder:
         self._stream: sd.InputStream | None = None
         self._needs_reinit = False  # set after a silent capture or a failed open
         self._open_failed = False  # the mic never opened, as opposed to hearing nothing
+        self._device_id: int | None = None  # input device of the last successful open
         self.on_stream_lost = None  # retained for API compatibility; unused on-demand
 
     def _cb(self, indata, frames, t, status) -> None:
@@ -63,13 +125,19 @@ class Recorder:
         with self._lock:
             self._chunks = []
             self._recording = True
-        # Only re-initialise PortAudio when we already know the device list is
-        # suspect. Doing it every press cost ~70ms of first-word latency for
-        # nothing the common case needs.
-        if self._needs_reinit:
+        # Re-initialise when the device list is known to be suspect — either a
+        # previous capture told us so, or macOS is now pointing at a different
+        # input device than the one we last opened. That second check is what makes
+        # connecting AirPods mid-session a non-event instead of a failed press:
+        # PortAudio's cache is refreshed *before* we ask it for a device that
+        # moved, rather than after it errors. One CoreAudio property read, so it
+        # costs nothing on the common path where nothing has changed.
+        device = default_input_device()
+        if self._needs_reinit or (device is not None and device != self._device_id):
             self._reinit_portaudio()
             self._needs_reinit = False
         if self._open_stream():
+            self._device_id = device
             return
 
         # A failed open almost always means PortAudio's cached device list went
@@ -81,6 +149,7 @@ class Recorder:
         print("[simo] retrying with a fresh PortAudio device list", flush=True)
         self._reinit_portaudio()
         if self._open_stream():
+            self._device_id = default_input_device()
             print("[simo] mic recovered after re-initialising PortAudio", flush=True)
             return
 
