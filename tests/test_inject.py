@@ -126,8 +126,15 @@ def test_paste_sends_cmd_down_v_down_v_up_cmd_up(mac):
         (mac.inject.KEY_V, False),
         (mac.inject.KEY_CMD, False),
     ], "Electron/Chromium apps drop the paste unless the Cmd key event is posted too"
-    # every event carries the Command flag so its flagsChanged form matches hardware
-    assert all(flags for _k, _d, flags in mac.keys)
+
+    cmd = mac.inject.kCGEventFlagMaskCommand
+    flags = [f for _k, _d, f in mac.keys]
+    assert flags[:3] == [cmd, cmd, cmd], "the held phase must carry the Command flag"
+    # The release must NOT. Sending "Command released" with the Command flag still
+    # set is self-contradictory and macOS latches it: the modifier then reads as
+    # held after every dictation, so the user's next keystroke becomes a shortcut
+    # and their keyboard appears broken. Real hardware clears it on release.
+    assert flags[3] == 0, "Cmd key-up must clear the modifier or it stays stuck"
 
 
 # --------------------------------------------------------------------------

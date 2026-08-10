@@ -4,6 +4,49 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] — 2026-08-10
+
+### Fixed
+
+- **Dictation stopped working entirely after AirPods connected, and stayed broken
+  until the app was restarted by hand.** Twelve consecutive
+  `Internal PortAudio error [PaErrorCode -9986]` in the log, with CoreAudio
+  reporting `err='-10851'`. PortAudio caches its device list at initialisation, so
+  a microphone appearing or disappearing mid-session left the daemon asking for a
+  device that had moved — in a fresh process every sample rate opened fine, which
+  is what made it look like a hardware fault.
+
+  The failure was terminal by construction: `begin()` caught the exception and
+  gave up. `_needs_reinit` already existed and would have fixed it, but was only
+  ever set after a *silent capture*, never after a *failed open*. A failed open now
+  re-initialises PortAudio and retries once, and sets `_needs_reinit` if that fails
+  too, so the next press starts from a clean list rather than repeating a
+  known-broken one.
+
+  Not a regression: the only change v2.1.0–v2.2.0 made to `audio.py` was adding a
+  read-only `is_recording` property.
+
+- **The Command key could be left latched after every dictation.** The four-event
+  paste added in v2.1.0 sent the Cmd key-*up* with the Command flag still set,
+  which is self-contradictory — "Command released, Command still active" — and
+  macOS latched it. `CGEventSourceFlagsState` reported Command as held after every
+  paste, so the next keystroke was liable to be read as a shortcut and the keyboard
+  would appear broken. Real hardware clears the flag on release; now so does this.
+  Asserted in `tests/test_inject.py` and verified against the live modifier state.
+
+- **Switching microphone mid-session is now a non-event, not a recovered failure.**
+  Recovering after an error still means one press behaves oddly, which is not good
+  enough for a device you connect several times a day. The current default input
+  device is now read straight from CoreAudio — the one source PortAudio's cache
+  cannot make stale — and the list is refreshed *before* asking for a device that
+  moved. One property read, so it costs nothing on the common path where nothing
+  has changed. Connect or disconnect AirPods and the next press simply works.
+
+- **A mic that never opened reported "no audio captured"** — which reads as *you
+  didn't speak*, and sends you to check your microphone instead of the log. That
+  case now says "microphone unavailable" and is tracked separately from genuinely
+  hearing nothing.
+
 ## [2.2.0] — 2026-08-06
 
 ### Changed
