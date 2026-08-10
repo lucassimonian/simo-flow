@@ -218,12 +218,47 @@ def run_suite() -> bool:
     return r.returncode == 0
 
 
+def _dirty_files() -> list[str]:
+    """Tracked files with uncommitted changes."""
+    r = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    return [line[3:].strip() for line in r.stdout.splitlines() if line.strip()]
+
+
+def _guard_working_tree(targets: set[str]) -> str | None:
+    """Refuse to mutate a file that has uncommitted changes.
+
+    This tool rewrites source in place and restores it afterwards. `finally`
+    covers an exception or Ctrl-C, but not a hard kill — and if that happened
+    while the tree was already dirty, there would be no way to tell our mutation
+    from the author's real work. Requiring the target files to be committed means
+    the worst case is always recoverable with `git checkout -- <file>`.
+    """
+    clash = sorted(targets & set(_dirty_files()))
+    if clash:
+        return (
+            "Refusing to run: these files have uncommitted changes, and this tool\n"
+            "edits source in place:\n"
+            + "".join(f"  - {f}\n" for f in clash)
+            + "Commit or stash them first, so an interrupted run is always recoverable\n"
+            "with: git checkout -- <file>"
+        )
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", help="substring filter on the mutation label")
     args = ap.parse_args()
 
     muts = [m for m in MUTATIONS if not args.only or args.only in m[0]]
+
+    problem = _guard_working_tree({relpath for _l, relpath, _o, _n in muts})
+    if problem:
+        print(problem)
+        return 2
 
     if not run_suite():
         print("The suite is already failing — fix that before mutating anything.")
@@ -247,6 +282,14 @@ def main() -> int:
                 print(f"  ok  {label}")
         finally:
             path.write_text(original)
+
+    # Belt and braces: prove we put every file back exactly as we found it.
+    left_behind = sorted({relpath for _l, relpath, _o, _n in muts} & set(_dirty_files()))
+    if left_behind:
+        print("\n!! MUTATIONS WERE NOT FULLY REVERTED — recover with:")
+        for f in left_behind:
+            print(f"   git checkout -- {f}")
+        return 3
 
     print(f"\n{len(killed)}/{len(muts)} guards are genuinely tested")
     if unapplied:

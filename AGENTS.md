@@ -117,3 +117,23 @@ reproduce the wrong-window class of bug on demand — use it after any change to
 - `engine/hotkey.py` installs a **consuming** CGEventTap on `fn`. It swallows the
   key so macOS's own globe-key action never fires. macOS disables slow taps; the
   re-enable path also resets the held state, or `fn` sticks down.
+
+## Developer tooling must never type into the user's window
+
+`engine/inject.py` posts real keyboard events and stages the real clipboard. Any
+tool that measures or exercises it must call `tools/_safe_input.stub_input()`
+first, which turns key posting into a counter and the clipboard into a dict.
+
+This is not hypothetical: a latency benchmark once called `paste_text()` directly
+to time the paste path and posted twelve real ⌘V keystrokes into the user's
+terminal. It looked exactly like the app malfunctioning. Timing the paste does not
+require delivering it.
+
+The single exception is `tools/rehearse_paste.py`, whose entire purpose is to check
+that a real paste lands in the right window, and which the user invokes knowingly
+via `./simo rehearse`.
+
+`tools/mutation_sweep.py` rewrites source files in place and restores them. It
+refuses to run when a target file has uncommitted changes, so an interrupted run is
+always recoverable with `git checkout -- <file>`, and it verifies the tree is clean
+before reporting success. Keep both guards if you touch it.
