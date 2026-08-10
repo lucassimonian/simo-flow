@@ -29,10 +29,21 @@ hold fn ──► mic opens on demand (16kHz) ──► whisper.cpp + Metal
 
 Two speed/accuracy tiers, switchable from the menu bar:
 
-| Tier | Model | Warm latency (silence → pasted) | Use it for |
-|------|-------|--------------------------------|------------|
-| **Accurate** (default) | `large-v3-turbo` | ~1s | Faithful transcription — captures exactly what you said |
-| **Fast** | `base.en` | ~600ms | Speed-critical dictation; competitive with Wispr's 700ms cloud target |
+| Tier | Model | Nothing to clean | Cleanup needed | Use it for |
+|------|-------|------------------|----------------|------------|
+| **Accurate** (default) | `large-v3-turbo` | **~570ms** | ~1.1s | Faithful transcription — captures exactly what you said |
+| **Fast** | `base.en` | **~110ms** | ~110ms † | Speed-critical dictation; ~6× under Wispr's 700ms cloud target |
+
+Measured warm on an M5 Air, stopwatch stopped when the keystroke lands — not when
+the app finishes tidying up afterwards, which is a further ~300ms the user never
+waits for. The cleanup pass is skipped entirely when the transcript has no fillers
+and no stutters, which on real usage is **72% of dictations** (see §"Engineering
+notes"). That is the difference between the two latency columns.
+
+† `base.en` tends to omit disfluencies rather than transcribe them, so there is
+usually nothing for cleanup to remove and the fast tier rarely pays for it. The
+trade is accuracy: it also drops the occasional real word, which is why the
+accurate tier is the default.
 
 The accurate model transcribes disfluencies faithfully; the LLM cleanup pass then removes fillers while preserving your hedges and wording. All on-device, no network hop, no account.
 

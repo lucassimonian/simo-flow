@@ -548,6 +548,56 @@ def _claim(bare, **kw):
     return importlib.import_module("engine.__main__").SimoFlow._claim_utterance(bare, **kw)
 
 
+def test_a_failed_paste_still_records_the_dictation(monkeypatch, tmp_path):
+    """A paste that can't land should cost the paste, not the words.
+
+    The pipeline used to return before writing to history, so a revoked
+    Accessibility permission destroyed the transcription outright — spoken, waited
+    for, and gone, with no copy anywhere. Exercised against the unbound method so
+    no menu-bar app, mic or runloop is needed.
+    """
+    import numpy as np
+
+    m = _mainmod()
+    import engine.inject as inject_mod
+    import engine.polish as polish_mod
+    import engine.store as store_mod
+    import engine.stt as stt_mod
+
+    monkeypatch.setattr(store_mod, "DB_PATH", tmp_path / "pipeline.db")
+    monkeypatch.setattr(stt_mod, "transcribe", lambda *a, **k: "the paste is going to fail")
+    monkeypatch.setattr(store_mod, "dictionary_prompt", lambda: "")
+    monkeypatch.setattr(polish_mod, "needs_cleanup", lambda _t: False)
+    monkeypatch.setattr(polish_mod, "polish", lambda t, *a, **k: t)
+    monkeypatch.setattr(inject_mod, "paste_text", lambda *a, **k: False)  # refused
+
+    flashes: list[str] = []
+
+    class BarePill:
+        def busy(self, stage=""):
+            pass
+
+        def flash(self, msg, hold_sec=1.6):
+            flashes.append(msg)
+
+        def hide(self):
+            pass
+
+    class Bare:
+        exact_mode = False
+        pill = BarePill()
+
+        def _ui_title(self, _t):
+            pass
+
+    m.SimoFlow._run_pipeline(Bare(), np.zeros(16000, dtype=np.float32), None)
+
+    rows = store_mod.history()
+    assert len(rows) == 1, "the transcription must survive a refused paste"
+    assert rows[0]["polished_text"] == "the paste is going to fail"
+    assert flashes and "saved" in flashes[0].lower(), f"and say where it went: {flashes}"
+
+
 def test_only_the_first_consumer_claims_an_utterance():
     bare = _claimable()
     assert _claim(bare) is True, "first caller takes the recording"
@@ -676,15 +726,21 @@ def test_same_file_detects_a_stream_already_pointed_at_the_log(tmp_path):
 # --------------------------------------------------------------------------
 def test_clean_speech_skips_the_model_entirely(monkeypatch):
     """72% of real dictations came back from the model unchanged. Spending a
-    second to be handed back exactly what whisper said is pure latency."""
+    second to be handed back exactly what whisper said is pure latency.
+
+    Counts calls rather than raising from the stub. An earlier version of this test
+    raised AssertionError if the model was called — which `polish()` caught with its
+    `except Exception` fallback, returned the raw text, and satisfied the assertion
+    anyway. The test passed whether or not the skip existed. Found by
+    tools/mutation_sweep.py, not by reading it.
+    """
     from engine import polish as polish_mod
 
-    def must_not_be_called(*_a, **_kw):
-        raise AssertionError("the model was called for a transcript with nothing to clean")
-
-    monkeypatch.setattr(polish_mod.requests, "post", must_not_be_called)
+    calls: list[str] = []
+    monkeypatch.setattr(polish_mod.requests, "post", lambda *a, **k: calls.append("called"))
     clean = "I want to check the onboarding flow before we ship it."
     assert polish_mod.polish(clean) == clean
+    assert calls == [], "the model must not be called when there is nothing to remove"
 
 
 def test_needs_cleanup_spots_what_cleanup_is_allowed_to_remove():

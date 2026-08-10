@@ -47,6 +47,15 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ --ignore=tests/test_pipeline.py
 
+      # A passing suite does not mean the guards are tested. Two bugs reached the
+      # user in one day with green tests, and one test actively asserted the broken
+      # behaviour. This breaks each safety guard in turn and fails if the suite
+      # stays green — a guard nothing screams about is a guard that will ship
+      # broken. Runs the suite once per mutation, so it is the slowest step here
+      # and worth every second of it.
+      - name: Mutation sweep — prove each guard is actually tested
+        run: python tools/mutation_sweep.py
+
       # The local DB and log hold the plaintext of everything ever dictated, so a
       # leaked credential in this repo would matter more than most.
       - name: Secret scan
