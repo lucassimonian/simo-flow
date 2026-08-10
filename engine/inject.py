@@ -141,14 +141,20 @@ def _press_cmd_v() -> None:
 
     Chromium — so Slack, VS Code, Discord, Notion, every Electron app — tracks
     modifier state from the Cmd key's own flagsChanged event. Post only
-    V-with-Cmd-flag and those apps intermittently drop the paste. Every event
-    carries the Command flag so its flagsChanged form matches real hardware.
+    V-with-Cmd-flag and those apps intermittently drop the paste.
+
+    The final event — Cmd going up — must carry NO flags. Sending "Command
+    released" while the Command flag is still set is self-contradictory, and macOS
+    latches it: `CGEventSourceFlagsState` then reports Command as held after every
+    dictation, so the user's next keystroke is read as a shortcut. Real hardware
+    clears the flag on release, and so must we. Verified by reading the live
+    modifier state before and after.
     """
     cmd = kCGEventFlagMaskCommand
     _post_key(KEY_CMD, True, cmd)
     _post_key(KEY_V, True, cmd)
     _post_key(KEY_V, False, cmd)
-    _post_key(KEY_CMD, False, cmd)
+    _post_key(KEY_CMD, False, 0)
 
 
 # ---- public API ---------------------------------------------------------

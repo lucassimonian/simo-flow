@@ -26,6 +26,14 @@ All notable changes to Simo Flow are documented here. Format follows
   Not a regression: the only change v2.1.0–v2.2.0 made to `audio.py` was adding a
   read-only `is_recording` property.
 
+- **The Command key could be left latched after every dictation.** The four-event
+  paste added in v2.1.0 sent the Cmd key-*up* with the Command flag still set,
+  which is self-contradictory — "Command released, Command still active" — and
+  macOS latched it. `CGEventSourceFlagsState` reported Command as held after every
+  paste, so the next keystroke was liable to be read as a shortcut and the keyboard
+  would appear broken. Real hardware clears the flag on release; now so does this.
+  Asserted in `tests/test_inject.py` and verified against the live modifier state.
+
 - **Switching microphone mid-session is now a non-event, not a recovered failure.**
   Recovering after an error still means one press behaves oddly, which is not good
   enough for a device you connect several times a day. The current default input
