@@ -30,6 +30,60 @@ def test_trim_silence_strips_quiet_edges():
     assert len(trimmed) >= len(speech) * 0.8  # didn't eat the speech
 
 
+def test_mic_recovers_when_portaudios_device_list_went_stale(monkeypatch, capsys):
+    """Connecting or removing a mic (AirPods) while the app runs leaves
+    PortAudio's cached device list stale, and opening the stream then fails with
+    an internal error. The failure used to be terminal: nothing re-initialised
+    PortAudio, so every press afterwards failed identically until the app was
+    restarted by hand. Observed for real — 11 consecutive failures in the log.
+    """
+    from engine.audio import Recorder
+    import engine.audio as audio_mod
+
+    attempts = {"open": 0, "reinit": 0}
+
+    class FakeStream:
+        def __init__(self, **kw):
+            attempts["open"] += 1
+            if attempts["open"] == 1:  # stale device list
+                raise RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(audio_mod.sd, "InputStream", FakeStream)
+    monkeypatch.setattr(audio_mod.sd, "_terminate", lambda: attempts.__setitem__("reinit", attempts["reinit"] + 1))
+    monkeypatch.setattr(audio_mod.sd, "_initialize", lambda: None)
+
+    r = Recorder()
+    r.begin()
+    assert r.is_recording is True, "must recover, not fail until the app is restarted"
+    assert attempts["reinit"] >= 1, "PortAudio must be re-initialised before retrying"
+    assert "recovered" in capsys.readouterr().out.lower()
+
+
+def test_mic_that_cannot_open_at_all_says_so_plainly(monkeypatch):
+    """"no audio captured" is a misleading thing to tell someone whose microphone
+    never opened — it reads as "you didn't speak"."""
+    from engine.audio import Recorder
+    import engine.audio as audio_mod
+
+    def always_fails(**kw):
+        raise RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
+
+    monkeypatch.setattr(audio_mod.sd, "InputStream", always_fails)
+    monkeypatch.setattr(audio_mod.sd, "_terminate", lambda: None)
+    monkeypatch.setattr(audio_mod.sd, "_initialize", lambda: None)
+
+    r = Recorder()
+    r.begin()
+    assert r.is_recording is False
+    assert r.end() is None
+    assert "microphone" in r.reject_reason.lower(), r.reject_reason
+    # and the next press must try a fresh device list rather than give up for good
+    assert r._needs_reinit is True
+
+
 def test_silence_guard_rejects_dead_mic_buffer():
     from engine.audio import Recorder, RATE
 

@@ -31,7 +31,8 @@ class Recorder:
         self.reject_reason = ""  # why the last end() returned None, for the UI
         self._lock = threading.Lock()
         self._stream: sd.InputStream | None = None
-        self._needs_reinit = False  # set after a silent capture (device may have changed)
+        self._needs_reinit = False  # set after a silent capture or a failed open
+        self._open_failed = False  # the mic never opened, as opposed to hearing nothing
         self.on_stream_lost = None  # retained for API compatibility; unused on-demand
 
     def _cb(self, indata, frames, t, status) -> None:
@@ -62,27 +63,55 @@ class Recorder:
         with self._lock:
             self._chunks = []
             self._recording = True
+        # Only re-initialise PortAudio when we already know the device list is
+        # suspect. Doing it every press cost ~70ms of first-word latency for
+        # nothing the common case needs.
+        if self._needs_reinit:
+            self._reinit_portaudio()
+            self._needs_reinit = False
+        if self._open_stream():
+            return
+
+        # A failed open almost always means PortAudio's cached device list went
+        # stale — a mic was connected or removed (AirPods) while we were running.
+        # Re-initialise and retry once. Without this the failure was terminal:
+        # nothing ever refreshed the list, so every press afterwards failed
+        # identically until the app was restarted by hand. Seen for real, eleven
+        # consecutive times, and the app reported it as "no audio captured".
+        print("[simo] retrying with a fresh PortAudio device list", flush=True)
+        self._reinit_portaudio()
+        if self._open_stream():
+            print("[simo] mic recovered after re-initialising PortAudio", flush=True)
+            return
+
+        self._needs_reinit = True  # next press starts from a clean device list
+        self._open_failed = True
+        with self._lock:
+            self._recording = False
+
+    @staticmethod
+    def _reinit_portaudio() -> None:
+        """Drop and rebuild PortAudio's device list. Best-effort by design: if this
+        fails there is nothing better to try, and it must not stop a dictation."""
         try:
-            # Only re-initialise PortAudio when the last capture came back silent
-            # (a likely sign the input device changed, e.g. AirPods connected).
-            # Doing it every press cost ~70ms of first-word latency for nothing
-            # the common case needs.
-            if self._needs_reinit:
-                try:
-                    sd._terminate()
-                    sd._initialize()
-                except Exception:
-                    pass
-                self._needs_reinit = False
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            print(f"[simo] PortAudio re-init failed: {e}", flush=True)
+
+    def _open_stream(self) -> bool:
+        """Open and start the mic stream. False if the device refused."""
+        try:
             self._stream = sd.InputStream(
                 samplerate=RATE, channels=1, dtype="float32", blocksize=512, callback=self._cb
             )
             self._stream.start()
+            self._open_failed = False
+            return True
         except Exception as e:
             print(f"[simo] mic open failed: {e}", flush=True)
-            with self._lock:
-                self._recording = False
             self._stream = None
+            return False
 
     def _close_stream(self) -> None:
         if self._stream is not None:
@@ -103,7 +132,9 @@ class Recorder:
         self._close_stream()
         self.reject_reason = ""
         if not chunks:
-            self.reject_reason = "no audio captured"
+            self.reject_reason = (
+                "microphone unavailable — see log" if self._open_failed else "no audio captured"
+            )
             return None
         samples = np.concatenate(chunks)
         if len(samples) < MIN_UTTERANCE_SEC * RATE:
