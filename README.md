@@ -57,6 +57,10 @@ A local dashboard at `localhost:7331` — searchable history, insights (words pe
 
 ![Simo Flow dashboard — dark mode](docs/dashboard-home-dark.png)
 
+![Simo Flow dashboard — privacy controls](docs/dashboard-privacy.png)
+
+*Screenshots are generated from invented placeholder data by `tools/screenshot_docs.py` — a dictation app's own screenshots should not publish the author's real speech.*
+
 ## Features
 
 - 🎙 **Push-to-talk**: hold `fn`, speak, release
