@@ -57,20 +57,23 @@ def _fake_audio(monkeypatch, device_ids):
     return audio_mod.Recorder(), calls
 
 
-def test_a_changed_input_device_is_handled_before_it_can_fail(monkeypatch):
-    """AirPods connecting must be a non-event, not a failed press that recovers.
+def test_a_changed_input_device_does_not_reinitialise_on_the_hotkey_path(monkeypatch):
+    """begin() runs inside the fn-key event-tap callback on the main runloop.
 
-    PortAudio's cached device list is refreshed *before* we ask it for a device
-    that moved — detected by reading the current default straight from CoreAudio,
-    which is the one source the cache can't make stale.
+    `sd._terminate()` tears down the process's whole CoreAudio client and can block —
+    most likely at exactly the moment a device is switching. Blocking there stalls
+    the system input pipeline, which presents as the machine freezing. v2.2.1 did
+    re-initialise here on any device change; it froze a laptop mid-meeting when
+    AirPods connected while another app held the microphone. Recovery is reactive
+    instead: open, and only re-initialise after a failure.
     """
     rec, calls = _fake_audio(monkeypatch, device_ids=[78, 91])  # built-in, then AirPods
-    rec.begin()  # first ever open: no previous device, so a refresh is expected
+    rec.begin()
     rec.end()
     baseline = calls["reinit"]
-    rec.begin()  # device id changed underneath us
-    assert calls["reinit"] == baseline + 1, "a changed device must refresh the list up front"
-    assert rec.is_recording is True, "and the press must just work — no failure, no retry"
+    rec.begin()  # device changed underneath us
+    assert calls["reinit"] == baseline, "must not tear down CoreAudio on the hotkey path"
+    assert rec.is_recording is True, "and the press must still record"
 
 
 def test_an_unchanged_device_costs_nothing(monkeypatch):
@@ -706,59 +709,45 @@ def test_trim_survives_a_missing_log(tmp_path):
     assert m._trim_log(str(tmp_path / "nope.log")) is False
 
 
-def test_transcripts_never_reach_a_launchd_redirected_stream(tmp_path, monkeypatch):
-    """The boot log must not receive dictated speech.
+def test_a_launchd_redirected_stream_is_never_kept_as_a_sink(tmp_path):
+    """The boot log must never receive dictated speech.
 
-    launchd redirects stdout/stderr to ~/.simo-flow.boot.log, which it creates with
-    the default umask — mode 644, readable by every account on the machine. The tee
-    kept those redirected streams as live sinks for the whole process lifetime, so
-    every pipeline line (which contains the raw and cleaned transcript) was written
-    there too. Found in production at 45KB and 36 transcript lines, world-readable.
+    launchd redirects stdout/stderr to ~/.simo-flow.boot.log, which it creates at
+    the default umask — mode 644, readable by every account on the machine. Keeping
+    those streams as sinks wrote every pipeline line, transcripts included, into it
+    for the whole process lifetime. Found in production at 45KB / 36 transcript
+    lines.
 
-    A file-backed stream means launchd redirected it and must be dropped. A tty
-    means a developer is running the app by hand and should still see output.
+    Tested as a pure decision rather than by calling _tee_logs(): that function
+    reassigns global sys.stdout, and a test which does so then hangs the rest of the
+    suite through pytest's capture. Found the hard way.
     """
     m = _mainmod()
     boot = tmp_path / "boot.log"
-    main_log = tmp_path / "main.log"
-    monkeypatch.setattr(m, "LOG_PATH", str(main_log))
+    boot.write_text("")
+    with open(boot, "a") as file_backed:
+        assert m._keep_stream(file_backed) is False, "launchd's redirect must be dropped"
+    assert m._keep_stream(None) is False
 
-    with open(boot, "a") as fake_launchd_stream:
-        monkeypatch.setattr("sys.__stdout__", fake_launchd_stream)
-        monkeypatch.setattr("sys.__stderr__", fake_launchd_stream)
-        m._tee_logs()
-        try:
-            print("[simo] 900ms raw='my private sentence' pasted='My private sentence.'")
-        finally:
-            import sys as _sys
+    class FakeTTY:
+        def isatty(self):
+            return True
 
-            _sys.stdout, _sys.stderr = _sys.__stdout__, _sys.__stderr__
+    class Broken:
+        def isatty(self):
+            raise ValueError("closed")
 
-    assert "private sentence" in main_log.read_text(), "our own log must still get it"
-    assert "private sentence" not in boot.read_text(), (
-        "a launchd-redirected stream must not receive transcripts"
-    )
+    assert m._keep_stream(FakeTTY()) is True, "a terminal must still receive output"
+    assert m._keep_stream(Broken()) is False, "an unusable stream is not a sink"
 
 
-def test_boot_log_permissions_are_tightened_at_startup(tmp_path, monkeypatch):
-    """launchd creates the boot log at 644 and nothing hardened it. Even with
-    transcripts no longer written there, a crash trace can name file paths, so it
-    should not be world-readable either."""
-    import os
-    import stat
-
+def test_boot_log_path_is_separate_from_the_transcript_log():
+    """Two distinct files: one launchd owns for pre-startup crashes, one the app owns
+    and trims. Pointing both at the same path is what caused every line to be
+    written twice in v2.1.1."""
     m = _mainmod()
-    boot = tmp_path / "boot.log"
-    boot.write_text("some pre-startup crash output\n")
-    os.chmod(boot, 0o644)
-    monkeypatch.setattr(m, "LOG_PATH", str(tmp_path / "main.log"))
-    monkeypatch.setattr(m, "BOOT_LOG_PATH", str(boot))
-
-    m._tee_logs()
-    import sys as _sys
-
-    _sys.stdout, _sys.stderr = _sys.__stdout__, _sys.__stderr__
-    assert stat.S_IMODE(boot.stat().st_mode) == 0o600
+    assert m.BOOT_LOG_PATH != m.LOG_PATH
+    assert "boot" in m.BOOT_LOG_PATH
 
 
 def test_same_file_detects_a_stream_already_pointed_at_the_log(tmp_path):

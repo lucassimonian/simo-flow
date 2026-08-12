@@ -469,6 +469,23 @@ def _trim_log(path: str, max_bytes: int = MAX_LOG_BYTES, keep_bytes: int = KEEP_
         return False  # a log we can't trim must never stop the app starting
 
 
+def _keep_stream(stream) -> bool:
+    """Whether `stream` should stay a sink once we have our own log open.
+
+    A tty is a developer running the app by hand and should still see output.
+    Anything file-backed is launchd's redirect to the boot log, and keeping it wrote
+    dictated transcripts into a world-readable file for the life of the process.
+
+    Asking "is this a terminal?" rather than "is this one specific path?" is the
+    point: the previous check only recognised the path launchd used to use, and
+    silently stopped protecting anything the moment that path changed.
+    """
+    try:
+        return stream is not None and stream.isatty()
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _tee_logs() -> None:
     """Mirror stdout/stderr to ~/.simo-flow.log so failures survive a closed
     terminal (or a .app launch with no terminal at all). The log holds plaintext
@@ -536,14 +553,8 @@ def _tee_logs() -> None:
     # output. So the test is "is this a terminal?", not "which file is it?" — the
     # previous check only recognised the one specific path launchd used to use, and
     # silently stopped protecting anything the moment that path changed.
-    def _keep(stream):
-        try:
-            return stream is not None and stream.isatty()
-        except (OSError, ValueError, AttributeError):
-            return False
-
-    sys.stdout = _Tee(sys.__stdout__ if _keep(sys.__stdout__) else None, log)
-    sys.stderr = _Tee(sys.__stderr__ if _keep(sys.__stderr__) else None, log)
+    sys.stdout = _Tee(sys.__stdout__ if _keep_stream(sys.__stdout__) else None, log)
+    sys.stderr = _Tee(sys.__stderr__ if _keep_stream(sys.__stderr__) else None, log)
 
 
 def _install_shutdown_hooks() -> None:

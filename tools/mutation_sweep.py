@@ -95,10 +95,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "",
     ),
     (
-        "audio/proactive-device-change-detection",
+        "audio/no-coreaudio-teardown-on-the-hotkey-path",
         "engine/audio.py",
-        "        if self._needs_reinit or (device is not None and device != self._device_id):",
-        "        if self._needs_reinit:",
+        "        if self._needs_reinit:\n            self._reinit_portaudio()",
+        "        if self._needs_reinit or device != self._device_id:\n            self._reinit_portaudio()",
     ),
     (
         "audio/distinguish-unopenable-mic-from-silence",

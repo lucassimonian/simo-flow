@@ -132,8 +132,21 @@ class Recorder:
         # PortAudio's cache is refreshed *before* we ask it for a device that
         # moved, rather than after it errors. One CoreAudio property read, so it
         # costs nothing on the common path where nothing has changed.
+        # DELIBERATELY NOT re-initialising PortAudio just because the device
+        # changed. That was tried in v2.2.1 and reverted in v2.2.3.
+        #
+        # begin() runs inside the fn-key CGEventTap callback, on the main runloop.
+        # `sd._terminate()` tears down the process's whole CoreAudio client and can
+        # block — and the moment a device is changing (AirPods connecting, while
+        # another app holds the microphone) is exactly when it is most likely to.
+        # Blocking here stalls the system input event pipeline, which presents as
+        # the entire machine freezing. That happened, mid-meeting.
+        #
+        # So the device id is recorded for diagnostics only, and recovery stays
+        # reactive: attempt the open, and re-initialise once *after* a failure,
+        # which is rare and never coincides with an in-flight device switch.
         device = default_input_device()
-        if self._needs_reinit or (device is not None and device != self._device_id):
+        if self._needs_reinit:
             self._reinit_portaudio()
             self._needs_reinit = False
         if self._open_stream():
