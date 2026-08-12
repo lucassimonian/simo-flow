@@ -706,6 +706,61 @@ def test_trim_survives_a_missing_log(tmp_path):
     assert m._trim_log(str(tmp_path / "nope.log")) is False
 
 
+def test_transcripts_never_reach_a_launchd_redirected_stream(tmp_path, monkeypatch):
+    """The boot log must not receive dictated speech.
+
+    launchd redirects stdout/stderr to ~/.simo-flow.boot.log, which it creates with
+    the default umask — mode 644, readable by every account on the machine. The tee
+    kept those redirected streams as live sinks for the whole process lifetime, so
+    every pipeline line (which contains the raw and cleaned transcript) was written
+    there too. Found in production at 45KB and 36 transcript lines, world-readable.
+
+    A file-backed stream means launchd redirected it and must be dropped. A tty
+    means a developer is running the app by hand and should still see output.
+    """
+    m = _mainmod()
+    boot = tmp_path / "boot.log"
+    main_log = tmp_path / "main.log"
+    monkeypatch.setattr(m, "LOG_PATH", str(main_log))
+
+    with open(boot, "a") as fake_launchd_stream:
+        monkeypatch.setattr("sys.__stdout__", fake_launchd_stream)
+        monkeypatch.setattr("sys.__stderr__", fake_launchd_stream)
+        m._tee_logs()
+        try:
+            print("[simo] 900ms raw='my private sentence' pasted='My private sentence.'")
+        finally:
+            import sys as _sys
+
+            _sys.stdout, _sys.stderr = _sys.__stdout__, _sys.__stderr__
+
+    assert "private sentence" in main_log.read_text(), "our own log must still get it"
+    assert "private sentence" not in boot.read_text(), (
+        "a launchd-redirected stream must not receive transcripts"
+    )
+
+
+def test_boot_log_permissions_are_tightened_at_startup(tmp_path, monkeypatch):
+    """launchd creates the boot log at 644 and nothing hardened it. Even with
+    transcripts no longer written there, a crash trace can name file paths, so it
+    should not be world-readable either."""
+    import os
+    import stat
+
+    m = _mainmod()
+    boot = tmp_path / "boot.log"
+    boot.write_text("some pre-startup crash output\n")
+    os.chmod(boot, 0o644)
+    monkeypatch.setattr(m, "LOG_PATH", str(tmp_path / "main.log"))
+    monkeypatch.setattr(m, "BOOT_LOG_PATH", str(boot))
+
+    m._tee_logs()
+    import sys as _sys
+
+    _sys.stdout, _sys.stderr = _sys.__stdout__, _sys.__stderr__
+    assert stat.S_IMODE(boot.stat().st_mode) == 0o600
+
+
 def test_same_file_detects_a_stream_already_pointed_at_the_log(tmp_path):
     """launchd used to redirect stdout to the very file we tee into, so every
     line landed twice. Detecting that is what stops the duplication."""

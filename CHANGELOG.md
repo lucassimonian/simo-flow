@@ -4,6 +4,36 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.2] — 2026-08-11
+
+### Security
+
+- **Dictated transcripts were being written to a world-readable file.** v2.2.1 added
+  `~/.simo-flow.boot.log` so launchd would stop double-writing the main log, and
+  documented it as catching "failures that happen before the app can log for
+  itself". That was wrong in two ways, and the combination leaked speech.
+
+  Under launchd, `sys.__stdout__` *is* the boot log. `_tee_logs()` kept those
+  redirected streams as additional sinks for the entire life of the process, so
+  every pipeline line — which contains the raw and cleaned transcript — went there
+  too. And nothing ever set permissions on the file, so launchd created it with the
+  default umask: **mode 644, readable by every account on the machine.** Found in
+  production at 45KB containing 36 transcript lines.
+
+  A redirected stream is now dropped rather than kept. The test is "is this a
+  terminal?" rather than "is this one specific path?" — the previous check only
+  recognised the path launchd *used* to use and silently stopped protecting anything
+  the moment that path changed. A tty is still kept, so running the app by hand
+  prints where you can see it. The boot log is also chmod-ed 0600 at startup, since
+  a crash trace can name file paths even with transcripts gone.
+
+  Both behaviours are covered by tests and by `tools/mutation_sweep.py`, so neither
+  can regress silently. Found by an adversarial security review of the release that
+  introduced it.
+
+  **If you ran v2.2.1:** `~/.simo-flow.boot.log` may contain your transcripts at
+  mode 644. Delete it — `rm ~/.simo-flow.boot.log` — or let this version tighten it.
+
 ## [2.2.1] — 2026-08-10
 
 ### Fixed

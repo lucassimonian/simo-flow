@@ -199,6 +199,18 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        if True:\n            return False",
     ),
     (
+        "main/transcripts-never-reach-the-boot-log",
+        "engine/__main__.py",
+        "            return stream is not None and stream.isatty()",
+        "            return stream is not None",
+    ),
+    (
+        "main/boot-log-permissions-tightened",
+        "engine/__main__.py",
+        "        if os.path.exists(boot):\n            os.chmod(boot, 0o600)",
+        "        if False:\n            os.chmod(boot, 0o600)",
+    ),
+    (
         "main/duplicate-writer-detection",
         "engine/__main__.py",
         "    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)",

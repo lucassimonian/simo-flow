@@ -415,6 +415,9 @@ def _acquire_singleton() -> object:
 
 
 LOG_PATH = "~/.simo-flow.log"
+# launchd-owned; catches failures occurring before _tee_logs() runs (a broken
+# venv, a missing interpreter). Never a sink for anything we print ourselves.
+BOOT_LOG_PATH = "~/.simo-flow.boot.log"
 # The log is a verbatim record of everything ever dictated, so it can't grow for
 # ever. Trimmed at startup rather than on a timer: it's the one moment nothing
 # else is writing, and a dictation app is restarted often enough.
@@ -469,7 +472,12 @@ def _trim_log(path: str, max_bytes: int = MAX_LOG_BYTES, keep_bytes: int = KEEP_
 def _tee_logs() -> None:
     """Mirror stdout/stderr to ~/.simo-flow.log so failures survive a closed
     terminal (or a .app launch with no terminal at all). The log holds plaintext
-    transcripts, so it is created 0600 (owner-only) and trimmed when oversized."""
+    transcripts, so it is created 0600 (owner-only) and trimmed when oversized.
+
+    Under launchd, stdout and stderr are redirected to the boot log, and those
+    streams are deliberately dropped rather than kept as additional sinks — see the
+    comment at the tee assignment. A terminal is kept, so running the app by hand
+    still prints where you can see it."""
     import os
     import sys
 
@@ -478,9 +486,20 @@ def _tee_logs() -> None:
     fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
     os.chmod(path, 0o600)  # tighten even if it pre-existed world-readable
     log = os.fdopen(fd, "a", buffering=1)
-    # An older LaunchAgent points stdout/stderr here too. Adding our handle on top
-    # of that writes every line twice, so in that case let the real stream be the
-    # only writer.
+
+    # launchd creates the boot log with the default umask — mode 644, readable by
+    # every account on the machine. Nothing else hardens it, and a crash trace can
+    # still name file paths even now that transcripts never reach it.
+    try:
+        boot = os.path.expanduser(BOOT_LOG_PATH)
+        if os.path.exists(boot):
+            os.chmod(boot, 0o600)
+    except OSError:
+        pass  # a boot log we can't chmod must not stop the app starting
+
+    # An older LaunchAgent points stdout/stderr at our own log. Adding our handle
+    # on top of that writes every line twice, so let the real stream be the only
+    # writer.
     if _same_file(sys.__stdout__, path) or _same_file(sys.__stderr__, path):
         print("[simo] launchd already logs to this file — run ./simo install to "
               "stop every line being recorded twice", file=sys.__stdout__, flush=True)
@@ -508,8 +527,23 @@ def _tee_logs() -> None:
                 return lambda: False
             raise AttributeError(name)
 
-    sys.stdout = _Tee(sys.__stdout__, log)
-    sys.stderr = _Tee(sys.__stderr__, log)
+    # A redirected (file-backed) stream is launchd's boot log, and must NOT stay a
+    # sink: every pipeline line carries the raw and cleaned transcript, so keeping
+    # it wrote dictated speech into a world-readable file for the whole life of the
+    # process. Found in production at 45KB and 36 transcript lines, mode 644.
+    #
+    # A tty means a developer is running the app by hand and should still see
+    # output. So the test is "is this a terminal?", not "which file is it?" — the
+    # previous check only recognised the one specific path launchd used to use, and
+    # silently stopped protecting anything the moment that path changed.
+    def _keep(stream):
+        try:
+            return stream is not None and stream.isatty()
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    sys.stdout = _Tee(sys.__stdout__ if _keep(sys.__stdout__) else None, log)
+    sys.stderr = _Tee(sys.__stderr__ if _keep(sys.__stderr__) else None, log)
 
 
 def _install_shutdown_hooks() -> None:

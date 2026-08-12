@@ -92,7 +92,12 @@ reproduce the wrong-window class of bug on demand — use it after any change to
      "simplify" it away.
 
 10. **`~/.simo-flow.db` and `~/.simo-flow.log` hold the plaintext of everything
-    ever dictated, at mode `0600`.** Never loosen those permissions, never write
+    ever dictated, at mode `0600`.** `~/.simo-flow.boot.log` must NEVER receive
+    anything the app prints — it is launchd-owned, created at the default umask, and
+    only exists to catch failures occurring before `_tee_logs()` runs. `_tee_logs`
+    keeps a stream only when it is a **tty**; a file-backed stream is launchd's
+    redirect and is dropped. Checking for a specific path instead is what leaked 36
+    transcript lines into a world-readable file in v2.2.1. Never loosen those permissions, never write
     transcripts anywhere else, and never add a network call that carries them.
     The history must stay deletable and exportable from the dashboard's Privacy
     page — a store of everything you have said needs both an exit and an off switch.
