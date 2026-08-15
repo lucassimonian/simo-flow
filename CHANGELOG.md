@@ -4,6 +4,64 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.4] — 2026-08-15
+
+### Fixed
+
+- **The machine could still freeze.** v2.2.3 reverted the change that caused it —
+  tearing down CoreAudio whenever the input device changed — and that revert was
+  correct but incomplete. It closed one of **three** routes to the same blocking
+  call, and both survivors were reachable from the fn-key `CGEventTap` callback.
+
+  The dangerous one needed no device change at all. `end()` sets an internal
+  "device list is suspect" flag whenever a capture comes back silent, which is
+  exactly what connecting AirPods mid-sentence produces — so the *next* press
+  called `sd._terminate()` on the event-tap thread. A tap that blocks stalls the
+  system input pipeline: every key in every app stops, and the machine looks dead
+  rather than the app. The freeze was one press away, not gone.
+
+  Removing the third call would have been the same mistake a third time, and it
+  would have missed that `sd.InputStream()` can block on its own while a device is
+  switching. The invariant is now enforced instead: **nothing reachable from the
+  hotkey waits on the audio device.** `begin()` and `end()` set flags and queue;
+  one dedicated `simo-audio` thread performs every device operation, in
+  press-then-release order. A wedged CoreAudio costs one dictation instead of the
+  machine.
+
+  Confirmed on real hardware, in the scenario that caused the original freeze:
+  AirPods connecting and disconnecting mid-session while another app held the
+  microphone. `sd._terminate()` executed for real during a live device switch, the
+  mic recovered on the same press, and 13 of 13 dictations landed with no stall.
+  Recovery also improved as a side effect — the same failure previously took 11
+  consecutive presses and an app restart.
+
+- **A failed microphone open could cancel the recording that replaced it.** Found
+  reviewing the fix above rather than by a test. The retry path takes seconds, and
+  someone whose mic just failed presses fn again immediately — so the first
+  press's failure landed on the second press's recording and killed it, leaving the
+  mic apparently broken after it had already recovered. Each press now carries a
+  generation, and a stale open cannot touch state it no longer owns.
+
+### Changed
+
+- **The boot-log permission guard is now testable, and tested.** It lived inside
+  `_tee_logs()`, which replaces the process's stdout and cannot reasonably be
+  called from a test — so the guard keeping the boot log owner-only had shipped
+  with nothing covering it. Extracted as `_harden_boot_log()`.
+
+- **`tools/mutation_sweep.py` runs the suite under a timeout.** A mutation that
+  made a test hang previously wedged the tool indefinitely with nothing printed.
+
+### Internal
+
+- A mutation checking that dictated speech never reaches the boot log had been
+  silently stale since v2.2.3 — `_keep_stream` moved from a method to a
+  module-level function and the mutation no longer matched on indentation alone.
+  Both this and the untested boot-log guard had left CI red on `main`.
+
+- `docs/ROADMAP.md` sets out where Simo Flow goes next, based on what the Wispr
+  Flow binary actually does and on what the local competitors already cover.
+
 ## [2.2.2] — 2026-08-11
 
 ### Security
