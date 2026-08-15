@@ -257,13 +257,19 @@ PYTEST = [
 SUITE_TIMEOUT_SEC = 300
 
 
-def run_suite() -> bool:
+def run_suite(explain: bool = False) -> bool:
     """True if the suite passes.
 
     Bounded, because a mutation that makes a test hang would otherwise wedge this
     tool for ever with nothing printed — and the first symptom would be a CI job
     that never finishes and a developer guessing why. A suite that hangs is not a
     suite that passes, so a timeout counts as a failure (the mutation was caught).
+
+    `explain` prints pytest's own output. Off during the sweep, where a failing
+    suite is the *expected* result and thousands of lines would bury the report —
+    on for the pre-flight run, where a failure means something is genuinely broken
+    and swallowing the reason leaves you with "the suite is already failing" and
+    nowhere to go. That happened, on CI, and cost a debugging round trip.
     """
     try:
         r = subprocess.run(
@@ -272,6 +278,8 @@ def run_suite() -> bool:
     except subprocess.TimeoutExpired:
         print(f"      (suite hung for {SUITE_TIMEOUT_SEC}s — counted as caught)", flush=True)
         return False
+    if explain and r.returncode != 0:
+        print((r.stdout or "") + (r.stderr or ""), flush=True)
     return r.returncode == 0
 
 
@@ -317,7 +325,7 @@ def main() -> int:
         print(problem)
         return 2
 
-    if not run_suite():
+    if not run_suite(explain=True):
         print("The suite is already failing — fix that before mutating anything.")
         return 2
 
