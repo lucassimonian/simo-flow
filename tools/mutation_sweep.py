@@ -94,16 +94,41 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "            return\n",
         "",
     ),
+    # `audio/no-coreaudio-teardown-on-the-hotkey-path` lived here and has been
+    # deliberately removed, not quietly dropped for surviving. It asserted "do not
+    # re-initialise PortAudio when the device id changes", which mattered only
+    # because that call blocked the fn-key event tap. Nothing reachable from the
+    # hotkey blocks anything now, so reintroducing that check is no longer a
+    # freeze — it is at most a wasted teardown on the audio thread, and no test
+    # should fail for it. The two mutations below replace it with the stronger
+    # claim: the device work is not on the caller's thread at all.
+    #
+    # begin()/end() are called from the fn-key CGEventTap callback, and a tap that
+    # blocks stalls the system input pipeline — every key in every app stops.
+    # These put the device work back on the caller's thread, which is what froze a
+    # MacBook mid-meeting in v2.2.1.
     (
-        "audio/no-coreaudio-teardown-on-the-hotkey-path",
+        "audio/mic-open-never-blocks-the-hotkey-thread",
         "engine/audio.py",
-        "        if self._needs_reinit:\n            self._reinit_portaudio()",
-        "        if self._needs_reinit or device != self._device_id:\n            self._reinit_portaudio()",
+        "        self._audio_q.put(lambda: self._prepare_device(generation))",
+        "        self._prepare_device(generation)",
+    ),
+    (
+        "audio/stale-open-failure-cannot-cancel-a-newer-press",
+        "engine/audio.py",
+        "            if generation != self._generation:\n                return",
+        "            if False:\n                return",
+    ),
+    (
+        "audio/mic-close-never-blocks-the-hotkey-thread",
+        "engine/audio.py",
+        "        self._audio_q.put(self._close_stream)\n        self.level = 0.0",
+        "        self._close_stream()\n        self.level = 0.0",
     ),
     (
         "audio/distinguish-unopenable-mic-from-silence",
         "engine/audio.py",
-        '                "microphone unavailable — see log" if self._open_failed else "no audio captured"',
+        '                "microphone unavailable — see log" if open_failed else "no audio captured"',
         '                "no audio captured"',
     ),
     # ---- polish: the dictation-integrity guard ----------------------------
@@ -198,11 +223,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        if os.path.getsize(path) <= max_bytes:\n            return False",
         "        if True:\n            return False",
     ),
+    # Indentation matters here: _keep_stream moved from a method to a module-level
+    # function, and the old 12-space mutation silently stopped matching. It was
+    # reported as "out of date" for one release while this guard — the one keeping
+    # dictated transcripts out of a world-readable file — went unchecked.
     (
         "main/transcripts-never-reach-the-boot-log",
         "engine/__main__.py",
-        "            return stream is not None and stream.isatty()",
-        "            return stream is not None",
+        "        return stream is not None and stream.isatty()",
+        "        return stream is not None",
     ),
     (
         "main/boot-log-permissions-tightened",
@@ -224,9 +253,25 @@ PYTEST = [
 ]
 
 
+# The suite runs in ~3s. This is not a tuning knob, it is a deadlock backstop.
+SUITE_TIMEOUT_SEC = 300
+
+
 def run_suite() -> bool:
-    """True if the suite passes."""
-    r = subprocess.run(PYTEST, cwd=ROOT, capture_output=True, text=True)
+    """True if the suite passes.
+
+    Bounded, because a mutation that makes a test hang would otherwise wedge this
+    tool for ever with nothing printed — and the first symptom would be a CI job
+    that never finishes and a developer guessing why. A suite that hangs is not a
+    suite that passes, so a timeout counts as a failure (the mutation was caught).
+    """
+    try:
+        r = subprocess.run(
+            PYTEST, cwd=ROOT, capture_output=True, text=True, timeout=SUITE_TIMEOUT_SEC
+        )
+    except subprocess.TimeoutExpired:
+        print(f"      (suite hung for {SUITE_TIMEOUT_SEC}s — counted as caught)", flush=True)
+        return False
     return r.returncode == 0
 
 

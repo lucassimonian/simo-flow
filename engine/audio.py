@@ -9,10 +9,18 @@ you hold fn, matching Wispr Flow. A fresh stream per utterance also sidesteps
 the dead-stream failure mode that used to feed whisper silence, which it
 transcribed as "[end of transcript]" and pasted.
 
-The stream is (re)opened in begin(); PortAudio is re-initialised first so a mic
-connected or removed since the last utterance (AirPods, a headset) is picked up
-rather than served from PortAudio's cached device list.
+Every operation that touches the audio device runs on a dedicated thread, never
+on the caller's. begin() and end() are reached from the fn-key CGEventTap
+callback on the main runloop, and a tap that blocks stalls the *system* input
+pipeline — every key in every app stops until it returns. That is not a figure
+of speech: it froze a MacBook mid-meeting, when a CoreAudio teardown blocked
+here while AirPods were connecting.
+
+So the hotkey path only ever flips flags and hands the device work to the audio
+thread. Whatever CoreAudio does with that work — answer in 5ms, or wedge for
+two seconds while a device switches — costs at most one dictation.
 """
+import queue
 import threading
 
 import numpy as np
@@ -96,6 +104,44 @@ class Recorder:
         self._open_failed = False  # the mic never opened, as opposed to hearing nothing
         self._device_id: int | None = None  # input device of the last successful open
         self.on_stream_lost = None  # retained for API compatibility; unused on-demand
+        # Bumped by every begin(). A device open runs on another thread and can
+        # take seconds when it has to retry, by which time the user may have
+        # pressed fn again — so its result is only allowed to touch recorder state
+        # if it still belongs to the current utterance. See _prepare_device.
+        self._generation = 0
+        # Every device call is queued here and executed by one dedicated thread,
+        # so no caller ever waits on CoreAudio. See _audio_worker.
+        self._audio_q: queue.Queue = queue.Queue()
+        threading.Thread(target=self._audio_worker, daemon=True, name="simo-audio").start()
+
+    # ---- the audio thread ------------------------------------------------
+    def _audio_worker(self) -> None:
+        """Run queued device operations, one at a time, in the order requested.
+
+        One thread rather than a pool, because ordering is correctness here: an
+        open that overtook the close following it would leave the microphone live
+        with the macOS indicator lit — the exact "always listening" impression
+        the on-demand design exists to avoid.
+        """
+        while True:
+            op = self._audio_q.get()
+            try:
+                op()
+            except Exception as e:
+                # Never let one bad operation kill this thread: it would leave the
+                # app unable to record for the rest of the session, silently.
+                print(f"[simo] audio operation failed: {type(e).__name__}: {e}", flush=True)
+
+    def _drain_audio_ops(self, timeout: float = 5.0) -> bool:
+        """Wait for queued device work to finish. False if it didn't in time.
+
+        NEVER call this from the hotkey path — waiting here is exactly the freeze
+        this design prevents. It exists for shutdown and for tests. The queue is
+        FIFO, so a sentinel reaching the front means everything before it is done.
+        """
+        done = threading.Event()
+        self._audio_q.put(done.set)
+        return done.wait(timeout)
 
     def _cb(self, indata, frames, t, status) -> None:
         if status:
@@ -116,36 +162,42 @@ class Recorder:
 
     # ---- capture ---------------------------------------------------------
     def begin(self) -> None:
-        """Hotkey down: open a fresh mic stream and start capturing.
+        """Hotkey down: arm capture now, open the microphone off-thread.
 
-        Opening here (not at launch) is what keeps the macOS mic indicator off
-        when idle. The ~100ms open latency is hidden by the natural pause
+        Returns in microseconds, and that is the whole point. This is called from
+        the fn-key CGEventTap callback on the main runloop; blocking here stops
+        every key on the machine, not just this app. v2.2.1 blocked here and froze
+        a MacBook mid-meeting.
+
+        Arming is two assignments. Opening the device — the part CoreAudio can sit
+        on for as long as it likes while AirPods connect — goes to the audio
+        thread. Frames only accumulate once the stream is live, so what the user
+        feels is unchanged: the ~100ms open still hides inside the natural pause
         between pressing fn and starting to speak.
         """
         with self._lock:
             self._chunks = []
             self._recording = True
-        # Re-initialise when the device list is known to be suspect — either a
-        # previous capture told us so, or macOS is now pointing at a different
-        # input device than the one we last opened. That second check is what makes
-        # connecting AirPods mid-session a non-event instead of a failed press:
-        # PortAudio's cache is refreshed *before* we ask it for a device that
-        # moved, rather than after it errors. One CoreAudio property read, so it
-        # costs nothing on the common path where nothing has changed.
-        # DELIBERATELY NOT re-initialising PortAudio just because the device
-        # changed. That was tried in v2.2.1 and reverted in v2.2.3.
-        #
-        # begin() runs inside the fn-key CGEventTap callback, on the main runloop.
-        # `sd._terminate()` tears down the process's whole CoreAudio client and can
-        # block — and the moment a device is changing (AirPods connecting, while
-        # another app holds the microphone) is exactly when it is most likely to.
-        # Blocking here stalls the system input event pipeline, which presents as
-        # the entire machine freezing. That happened, mid-meeting.
-        #
-        # So the device id is recorded for diagnostics only, and recovery stays
-        # reactive: attempt the open, and re-initialise once *after* a failure,
-        # which is rare and never coincides with an in-flight device switch.
-        device = default_input_device()
+            self._open_failed = False
+            self._generation += 1
+            generation = self._generation
+        self._audio_q.put(lambda: self._prepare_device(generation))
+
+    def _prepare_device(self, generation: int) -> None:
+        """Open the mic, recovering from a stale device list. Audio thread only.
+
+        Deliberately never holds `self._lock` across a device call. The capture
+        callback and the UI both take that lock, so a device call holding it would
+        block them — re-creating, one level down, the freeze this design exists to
+        prevent.
+
+        `generation` identifies the press this open belongs to. The retry path
+        below can take seconds, and a user whose mic just failed presses fn again
+        immediately — so by the time a failure is known, the recorder may already
+        belong to a newer utterance that is recording perfectly well. Reporting
+        the old failure onto it would kill a good recording.
+        """
+        device = default_input_device()  # recorded on success as _device_id
         if self._needs_reinit:
             self._reinit_portaudio()
             self._needs_reinit = False
@@ -159,6 +211,12 @@ class Recorder:
         # nothing ever refreshed the list, so every press afterwards failed
         # identically until the app was restarted by hand. Seen for real, eleven
         # consecutive times, and the app reported it as "no audio captured".
+        #
+        # Recovery stays *reactive* — we do not pre-emptively re-initialise just
+        # because the device id changed. v2.2.1 did that and froze the machine.
+        # It is safe to re-initialise here, on this thread, but a device switch in
+        # flight is still the worst possible moment to tear CoreAudio down, and
+        # trying the open first usually just works.
         print("[simo] retrying with a fresh PortAudio device list", flush=True)
         self._reinit_portaudio()
         if self._open_stream():
@@ -167,8 +225,10 @@ class Recorder:
             return
 
         self._needs_reinit = True  # next press starts from a clean device list
-        self._open_failed = True
         with self._lock:
+            if generation != self._generation:
+                return  # a newer press owns the recorder now; leave it alone
+            self._open_failed = True
             self._recording = False
 
     @staticmethod
@@ -188,7 +248,6 @@ class Recorder:
                 samplerate=RATE, channels=1, dtype="float32", blocksize=512, callback=self._cb
             )
             self._stream.start()
-            self._open_failed = False
             return True
         except Exception as e:
             print(f"[simo] mic open failed: {e}", flush=True)
@@ -211,11 +270,16 @@ class Recorder:
         with self._lock:
             self._recording = False
             chunks, self._chunks = self._chunks, []
-        self._close_stream()
+            open_failed = self._open_failed
+        # Closing blocks for the same reasons opening does, and this runs on the
+        # key-release path — so it goes to the audio thread too. The samples are
+        # already in memory; they do not need the device to come back first.
+        self._audio_q.put(self._close_stream)
+        self.level = 0.0  # drop the meter now, not whenever CoreAudio answers
         self.reject_reason = ""
         if not chunks:
             self.reject_reason = (
-                "microphone unavailable — see log" if self._open_failed else "no audio captured"
+                "microphone unavailable — see log" if open_failed else "no audio captured"
             )
             return None
         samples = np.concatenate(chunks)
@@ -234,10 +298,18 @@ class Recorder:
         return trimmed
 
     def stop_stream(self) -> None:
-        """Cleanup hook for app quit."""
+        """Cleanup hook for app quit.
+
+        Waits, briefly, unlike everything else here: quit is the one moment the
+        microphone must actually be released before the process goes away, and
+        there is no keyboard tap left to stall. Bounded so a wedged device can
+        delay the quit but never prevent it.
+        """
         with self._lock:
             self._recording = False
-        self._close_stream()
+        self._audio_q.put(self._close_stream)
+        if not self._drain_audio_ops(timeout=2.0):
+            print("[simo] mic did not close within 2s — quitting anyway", flush=True)
 
     def start_stream(self) -> None:
         """No-op: the stream is opened on demand in begin(). Retained so callers
@@ -271,10 +343,11 @@ if __name__ == "__main__":
     rec.begin()  # opens the stream
     print("recording 2s... (make any noise)")
     time.sleep(2.0)
-    samples = rec.end()  # closes the stream
+    samples = rec.end()  # queues the close; the samples are already in hand
     assert samples is not None, "no samples captured"
     dur = len(samples) / RATE
     assert 1.5 <= dur <= 2.5, f"unexpected duration {dur:.2f}s"
+    assert rec._drain_audio_ops(timeout=5.0), "audio thread did not finish closing"
     assert rec._stream is None, "stream not closed after end()"
     print(f"captured {dur:.2f}s, peak={np.abs(samples).max():.3f}, stream closed OK")
     print("audio self-check OK")
