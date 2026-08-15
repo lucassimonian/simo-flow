@@ -7,18 +7,21 @@ on:
 
 jobs:
   test:
-    # Simo Flow had only ever been proven on one laptop — one macOS version, one
-    # chip. Everything here is hermetic (no microphone, no models, no network), so
-    # there is no reason not to run it across the range users actually have.
-    # macos-13 is Intel; the rest are Apple Silicon. A CoreAudio or ctypes
-    # assumption that only holds on one of them now fails here rather than on
-    # someone's machine.
+    # Simo Flow had only ever been proven on one laptop — one macOS version. All
+    # of this is hermetic (no microphone, no models, no network), so there is no
+    # reason not to run it across the macOS versions users actually have.
+    #
+    # Apple Silicon only, deliberately. The README, the topics and the whisper
+    # Metal backend all target Apple Silicon, so an Intel runner would gate
+    # releases on a platform this app does not claim to support — and GitHub is
+    # retiring those images anyway, which showed up immediately as a job that
+    # queued for an hour without ever being assigned.
     name: Lint & test
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false  # knowing it breaks on exactly one of them is the point
+      fail-fast: false  # knowing it breaks on exactly one version is the point
       matrix:
-        os: [macos-13, macos-14, macos-15]
+        os: [macos-14, macos-15]
     steps:
       - uses: actions/checkout@v7
         with:
