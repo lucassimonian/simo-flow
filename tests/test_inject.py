@@ -204,6 +204,51 @@ def test_clipboard_not_restored_when_user_copied_during_paste(mac, monkeypatch):
 # --------------------------------------------------------------------------
 # 1. Focus captured at record-start, restored before pasting
 # --------------------------------------------------------------------------
+def test_paste_uses_the_key_that_types_v_on_this_layout(mac, monkeypatch):
+    """Virtual key codes are positions, not letters.
+
+    kVK_ANSI_V is wherever "v" sits on a US keyboard. On Dvorak that position is
+    ".", on AZERTY something else again — so posting it blindly sent Cmd+the wrong
+    key and paste silently did nothing (or worse) for anyone not on QWERTY.
+    """
+    monkeypatch.setattr(mac.inject, "_keycode_for_character", lambda ch: 47 if ch == "v" else None)
+
+    assert mac.inject.paste_text("hello") is True
+
+    pressed = [code for code, down, _flags in mac.keys if down and code != mac.inject.KEY_CMD]
+    assert pressed == [47], f"pasted with the US position instead of this layout's: {mac.keys}"
+
+
+def test_paste_falls_back_to_the_us_position_when_the_layout_is_unreadable(mac, monkeypatch):
+    """Some input sources — handwriting, certain IMEs — expose no layout at all.
+    Pasting with the US position is what the app always did, so it is the right
+    thing to degrade to. Failing to paste would be far worse than guessing."""
+    monkeypatch.setattr(mac.inject, "_keycode_for_character", lambda ch: None)
+
+    assert mac.inject.paste_text("hello") is True
+
+    pressed = [code for code, down, _flags in mac.keys if down and code != mac.inject.KEY_CMD]
+    assert pressed == [mac.inject.KEY_V]
+
+
+def test_the_real_layout_lookup_agrees_with_the_us_constant_on_a_us_layout(mac):
+    """Guards the ctypes plumbing itself, not the orchestration around it.
+
+    A wrong signature or a misread property would return None and be invisible —
+    the fallback would quietly paste correctly on the machine running the tests
+    and wrongly everywhere else.
+    """
+    import engine.inject as real
+
+    found = real._keycode_for_character("v")
+    if found is None:
+        pytest.skip("no readable keyboard layout on this machine")
+    assert found == real.KEY_V, (
+        f"the layout API says 'v' is keycode {found} but kVK_ANSI_V is {real.KEY_V} — "
+        f"either this machine is not on a US layout, or the lookup is wrong"
+    )
+
+
 def test_a_copied_image_survives_dictating(mac):
     """Dictating must not destroy something the user copied.
 

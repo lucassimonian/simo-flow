@@ -41,6 +41,19 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "",
     ),
     (
+        "inject/paste-key-follows-the-keyboard-layout",
+        "engine/inject.py",
+        "    v = _paste_keycode()",
+        "    v = KEY_V",
+    ),
+    (
+        "inject/clipboard-survives-as-typed-data",
+        "engine/inject.py",
+        "    previous = _snapshot_pasteboard() if restore else None",
+        "    previous = [[('public.utf8-plain-text', (_get_clipboard() or '').encode())]] "
+        "if restore and _get_clipboard() else None",
+    ),
+    (
         "inject/accessibility-gate",
         "engine/inject.py",
         "    if not _is_trusted():",

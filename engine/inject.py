@@ -43,8 +43,104 @@ from Quartz import (
     kCGHIDEventTap,
 )
 
-KEY_V = 9  # kVK_ANSI_V
+KEY_V = 9  # kVK_ANSI_V — the position of "v" on a US layout, and the fallback
 KEY_CMD = 55  # kVK_Command
+
+
+def _load_keyboard_layout():
+    """Carbon's Text Input Source API, for asking which key types a character.
+
+    Virtual key codes are *positions*, not letters. kVK_ANSI_V is wherever "v"
+    sits on a US keyboard — which on Dvorak is ".", and on AZERTY is something
+    else again. Posting it blindly sends Cmd+whatever-lives-there, so paste
+    silently did the wrong thing for anyone not on QWERTY.
+
+    Returns None if the framework can't be loaded, in which case the US position
+    is used and behaviour is exactly what it was before.
+    """
+    try:
+        import ctypes
+        import ctypes.util
+
+        carbon = ctypes.cdll.LoadLibrary(
+            ctypes.util.find_library("Carbon")
+            or "/System/Library/Frameworks/Carbon.framework/Carbon"
+        )
+        cf = ctypes.cdll.LoadLibrary(
+            ctypes.util.find_library("CoreFoundation")
+            or "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+        carbon.TISCopyCurrentKeyboardLayoutInputSource.restype = ctypes.c_void_p
+        carbon.TISGetInputSourceProperty.restype = ctypes.c_void_p
+        carbon.TISGetInputSourceProperty.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        carbon.LMGetKbdType.restype = ctypes.c_uint8
+        carbon.UCKeyTranslate.restype = ctypes.c_int32
+        carbon.UCKeyTranslate.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_uint16),
+        ]
+        cf.CFDataGetBytePtr.restype = ctypes.c_void_p
+        cf.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        prop = ctypes.c_void_p.in_dll(carbon, "kTISPropertyUnicodeKeyLayoutData")
+        return carbon, cf, prop, ctypes
+    except Exception as e:  # pragma: no cover - only on a broken/odd system
+        print(f"[simo] keyboard layout unavailable ({e}) — assuming a US layout", flush=True)
+        return None
+
+
+_LAYOUT = _load_keyboard_layout()
+
+_UC_KEY_ACTION_DISPLAY = 3
+_UC_NO_DEAD_KEYS = 1
+_MAX_VIRTUAL_KEYCODE = 128  # the whole ANSI/ISO/JIS range; nothing useful sits above
+
+
+def _keycode_for_character(char: str) -> int | None:
+    """The physical key that types `char` on the layout in use right now.
+
+    Read live rather than cached: switching input source is something people do
+    mid-sentence, and the whole scan costs microseconds because it stops at the
+    first match — on a US layout, ten iterations.
+    """
+    if _LAYOUT is None:
+        return None
+    carbon, cf, prop, ctypes = _LAYOUT
+    source = None
+    try:
+        source = carbon.TISCopyCurrentKeyboardLayoutInputSource()
+        if not source:
+            return None
+        data = carbon.TISGetInputSourceProperty(source, prop)
+        if not data:
+            return None  # some input sources (handwriting, IMEs) expose no layout
+        layout = cf.CFDataGetBytePtr(data)
+        if not layout:
+            return None
+        kbd_type = carbon.LMGetKbdType()
+        for code in range(_MAX_VIRTUAL_KEYCODE):
+            dead = ctypes.c_uint32(0)
+            length = ctypes.c_ulong(0)
+            buf = (ctypes.c_uint16 * 4)()
+            err = carbon.UCKeyTranslate(
+                layout, code, _UC_KEY_ACTION_DISPLAY, 0, kbd_type, _UC_NO_DEAD_KEYS,
+                ctypes.byref(dead), 4, ctypes.byref(length), buf,
+            )
+            if err == 0 and length.value == 1 and chr(buf[0]) == char:
+                return code
+        return None
+    except Exception as e:
+        print(f"[simo] could not read the keyboard layout ({e})", flush=True)
+        return None
+    finally:
+        if source:
+            cf.CFRelease(source)
+
+
+def _paste_keycode() -> int:
+    """The key to press with Command to paste, on this user's keyboard."""
+    return _keycode_for_character("v") or KEY_V
 
 # ponytail: a flat cap, not a streaming copy. Holding the pasteboard in memory for
 # ~300ms is fine for documents and screenshots; a 4K video or a huge file promise
@@ -218,9 +314,10 @@ def _press_cmd_v() -> None:
     modifier state before and after.
     """
     cmd = kCGEventFlagMaskCommand
+    v = _paste_keycode()  # position of "v" on *this* layout, not on a US one
     _post_key(KEY_CMD, True, cmd)
-    _post_key(KEY_V, True, cmd)
-    _post_key(KEY_V, False, cmd)
+    _post_key(v, True, cmd)
+    _post_key(v, False, cmd)
     _post_key(KEY_CMD, False, 0)
 
 
