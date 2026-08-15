@@ -133,6 +133,33 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "            if False:\n                return",
     ),
     (
+        "audio/stale-successful-open-is-not-published",
+        "engine/audio.py",
+        "            if generation != self._generation:\n"
+        "                return False\n"
+        "            self._device_id = device",
+        "            self._device_id = device",
+    ),
+    (
+        "inject/clipboard-read-never-raises",
+        "engine/inject.py",
+        '        print(f"[simo] could not read the clipboard '
+        '({type(e).__name__}: {e})", flush=True)\n        return None',
+        "        raise",
+    ),
+    (
+        "inject/oversized-clipboard-measured-before-copying",
+        "engine/inject.py",
+        "                total += int(data.length())",
+        "                total += len(bytes(data))",
+    ),
+    (
+        "store/backup-is-a-consistent-database",
+        "engine/store.py",
+        "            source.backup(target)",
+        "            pass",
+    ),
+    (
         "audio/mic-close-never-blocks-the-hotkey-thread",
         "engine/audio.py",
         "        self._audio_q.put(self._close_stream)\n        self.level = 0.0",

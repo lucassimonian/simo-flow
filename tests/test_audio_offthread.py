@@ -198,6 +198,39 @@ def test_a_late_open_failure_cannot_kill_the_press_that_replaced_it(rec, monkeyp
     )
 
 
+def test_a_slow_open_from_a_previous_press_does_not_hijack_the_current_one(rec, monkeypatch):
+    """A stale open that finally *succeeds* must not publish its stream.
+
+    The generation guard originally covered only the failure path. A slow open
+    that eventually worked would hand its stream to whichever utterance owned the
+    recorder by then: frames from the new press start landing in it, and the close
+    queued by the *old* press shuts it mid-sentence. Nothing reports that — no
+    error, no reject_reason, just a hole in what the user said.
+    """
+    release = threading.Event()
+    closes: list[int] = []
+
+    def slow_open():
+        release.wait(WEDGE_SEC)
+        return True
+
+    monkeypatch.setattr(rec, "_open_stream", slow_open)
+    monkeypatch.setattr(rec, "_close_stream", lambda: closes.append(1))
+
+    rec.begin()  # press 1 — its open blocks
+    rec.end()  # released before the mic ever opened; queues a close
+    rec.begin()  # press 2 — a new utterance now owns the recorder
+    release.set()  # press 1's open completes, far too late to be relevant
+    assert rec._drain_audio_ops(timeout=WEDGE_SEC * 3), "audio thread never settled"
+
+    # Two closes: the one press 1's end() queued, and press 1's own stale stream
+    # being shut immediately rather than left live for press 2 to inherit.
+    assert len(closes) == 2, (
+        f"expected the stale stream to be closed on the spot, saw {len(closes)} close(s) — "
+        f"press 1's stream was handed to press 2"
+    )
+
+
 def test_a_microphone_that_never_opens_is_reported_not_silently_swallowed(rec, monkeypatch):
     """A failed open must still reach the user.
 

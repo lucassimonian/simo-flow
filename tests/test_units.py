@@ -760,6 +760,35 @@ def test_flattening_history_backs_the_database_up_first(tmp_path, monkeypatch):
     assert stat_mod.S_IMODE(backups[0].stat().st_mode) == 0o600, "backup left readable by others"
 
 
+def test_the_backup_is_a_real_database_holding_the_pre_migration_text(tmp_path, monkeypatch):
+    """A backup that might not open is not a restore path.
+
+    Two threads write this database on separate connections — the dictation
+    pipeline and the dashboard's API server — so copying the file while one is
+    mid-transaction can produce a torn, unopenable snapshot. SQLite's own backup
+    API is the only thing that guarantees a consistent one.
+    """
+    import sqlite3
+
+    import engine.store as store
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "h.db")
+    store.log_dictation("raw one", "It breaks\n mid sentence.", 100)
+
+    assert store.flatten_history() == 1
+
+    backup = next(iter(tmp_path.glob("h.db.bak-*")))
+    conn = sqlite3.connect(backup)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        saved = conn.execute("SELECT polished_text FROM history").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert "\n" in saved, "the backup must hold the text as it was BEFORE the rewrite"
+    assert store.history()[0]["polished_text"] == "It breaks mid sentence."
+
+
 def test_tidying_nothing_writes_nothing(tmp_path, monkeypatch):
     """Pressing the button twice must not leave a second copy of every word you
     have ever dictated sitting in your home folder."""

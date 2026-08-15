@@ -204,6 +204,71 @@ def test_clipboard_not_restored_when_user_copied_during_paste(mac, monkeypatch):
 # --------------------------------------------------------------------------
 # 1. Focus captured at record-start, restored before pasting
 # --------------------------------------------------------------------------
+def test_a_clipboard_that_cannot_be_read_never_raises(monkeypatch):
+    """A failure here must cost the clipboard, never the dictation.
+
+    paste_text() promises to always return, and its caller only saves the
+    transcript *after* it returns (__main__._run_pipeline). An exception escaping
+    the snapshot would therefore destroy the words the user just spoke — the
+    primary result — to protect a side effect. That is lesson 007 exactly.
+    """
+    import engine.inject as inject
+
+    class Exploding:
+        @staticmethod
+        def generalPasteboard():
+            raise RuntimeError("pasteboard unavailable")
+
+    monkeypatch.setattr(inject, "NSPasteboard", Exploding)
+
+    assert inject._snapshot_pasteboard() is None
+    assert inject._restore_pasteboard([[("public.png", b"x")]]) is False
+
+
+def test_an_oversized_clipboard_is_measured_before_it_is_copied(monkeypatch):
+    """The cap must bound the allocation, not merely the check.
+
+    Reading the bytes and *then* testing the size means a multi-gigabyte file
+    promise is already resident in memory by the time the limit trips — which is
+    the one thing the limit exists to prevent.
+    """
+    import engine.inject as inject
+
+    materialised: list[str] = []
+
+    class HugeData:
+        @staticmethod
+        def length():
+            return inject.MAX_SNAPSHOT_BYTES + 1
+
+        def __len__(self):  # bytes(data) would go through here
+            materialised.append("copied")
+            return 0
+
+    class Item:
+        @staticmethod
+        def types():
+            return ["public.movie"]
+
+        @staticmethod
+        def dataForType_(_uti):
+            return HugeData()
+
+    class Pasteboard:
+        @staticmethod
+        def generalPasteboard():
+            return Pasteboard()
+
+        @staticmethod
+        def pasteboardItems():
+            return [Item()]
+
+    monkeypatch.setattr(inject, "NSPasteboard", Pasteboard)
+
+    assert inject._snapshot_pasteboard() is None, "oversized clipboard must not be snapshotted"
+    assert materialised == [], "the payload was copied into memory before being measured"
+
+
 def test_paste_uses_the_key_that_types_v_on_this_layout(mac, monkeypatch):
     """Virtual key codes are positions, not letters.
 

@@ -93,12 +93,23 @@ def clear_history() -> int:
 
 
 def history_needing_flatten() -> int:
-    """How many stored dictations still carry whisper's line wrapping."""
+    """How many stored dictations would actually change if tidied.
+
+    Counted with the same function that does the tidying rather than a SQL
+    approximation of it. The approximation looked only for newlines while the
+    tidy collapses every run of whitespace, so the dashboard could offer to fix
+    one number and then report having fixed a different one.
+    """
+    from engine.stt import flatten_whitespace
+
     with _conn() as c:
-        return c.execute(
-            "SELECT COUNT(*) FROM history WHERE raw_text GLOB '*'||char(10)||'*'"
-            " OR polished_text GLOB '*'||char(10)||'*'"
-        ).fetchone()[0]
+        c.row_factory = sqlite3.Row
+        return sum(
+            1
+            for row in c.execute("SELECT raw_text, polished_text FROM history")
+            if flatten_whitespace(row["raw_text"]) != row["raw_text"]
+            or flatten_whitespace(row["polished_text"]) != row["polished_text"]
+        )
 
 
 def flatten_history() -> int:
@@ -146,17 +157,33 @@ def flatten_history() -> int:
 def _backup_db() -> Path | None:
     """Copy the database next to itself before a destructive migration.
 
-    Owner-only, like the original: a backup of every word you have ever dictated
-    deserves the same permissions as the thing it copies.
+    Uses SQLite's own backup API rather than copying the file. Two threads write
+    this database — the dictation pipeline and the dashboard's API server — each
+    on its own connection, and a filesystem copy taken while one of them is
+    mid-transaction can produce a torn, unopenable file. A backup that might not
+    restore is not a restore path, which is the only reason this function exists.
+
+    The destination is created owner-only *before* any data reaches it. Letting
+    SQLite create it would apply the process umask, leaving a full plaintext dump
+    of every dictation ever recorded world-readable for the length of the copy —
+    a window, not a state, and easy to miss precisely because the end result looks
+    correct.
     """
     if not DB_PATH.exists():
         return None
-    import shutil
     from datetime import datetime
 
     dest = DB_PATH.with_suffix(f".db.bak-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
-    shutil.copy2(DB_PATH, dest)
-    os.chmod(dest, 0o600)
+    os.close(os.open(dest, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600))
+    source = sqlite3.connect(DB_PATH)
+    try:
+        target = sqlite3.connect(dest)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
     print(f"[simo] history backed up to {dest}", flush=True)
     return dest
 

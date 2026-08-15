@@ -203,44 +203,62 @@ def _snapshot_pasteboard() -> list[list[tuple[str, bytes]]] | None:
     Returns None if the pasteboard is larger than we are willing to hold in
     memory, in which case the caller falls back to clearing it.
     """
-    pb = NSPasteboard.generalPasteboard()
-    items = pb.pasteboardItems()
-    if items is None:
-        return []
-    snapshot: list[list[tuple[str, bytes]]] = []
-    total = 0
-    for item in items:
-        pairs: list[tuple[str, bytes]] = []
-        for uti in item.types() or ():
-            data = item.dataForType_(uti)
-            if data is None:
-                continue  # a promised type whose provider declined; nothing to keep
-            payload = bytes(data)
-            total += len(payload)
-            if total > MAX_SNAPSHOT_BYTES:
-                print(
-                    f"[simo] clipboard is over {MAX_SNAPSHOT_BYTES // 1_000_000}MB — "
-                    "it cannot be preserved across this dictation",
-                    flush=True,
-                )
-                return None
-            pairs.append((uti, payload))
-        if pairs:
-            snapshot.append(pairs)
-    return snapshot
+    try:
+        pb = NSPasteboard.generalPasteboard()
+        items = pb.pasteboardItems()
+        if items is None:
+            return []
+        snapshot: list[list[tuple[str, bytes]]] = []
+        total = 0
+        for item in items:
+            pairs: list[tuple[str, bytes]] = []
+            for uti in item.types() or ():
+                data = item.dataForType_(uti)
+                if data is None:
+                    continue  # a promised type whose provider declined; nothing to keep
+                # Size is checked *before* materialising into Python bytes. Testing
+                # afterwards would bound the check but not the allocation — a
+                # multi-gigabyte file promise would already be resident by then,
+                # which is the one thing the cap exists to prevent.
+                total += int(data.length())
+                if total > MAX_SNAPSHOT_BYTES:
+                    print(
+                        f"[simo] clipboard is over {MAX_SNAPSHOT_BYTES // 1_000_000}MB — "
+                        "it cannot be preserved across this dictation",
+                        flush=True,
+                    )
+                    return None
+                pairs.append((uti, bytes(data)))
+            if pairs:
+                snapshot.append(pairs)
+        return snapshot
+    except Exception as e:
+        # Must never raise. paste_text() promises to always return, and its caller
+        # only saves the transcript *after* it returns — so an exception escaping
+        # here would cost the user the words they just spoke, not merely their
+        # clipboard. Degrade to "nothing to restore", which clears rather than
+        # preserves: worse than succeeding, far better than losing the dictation.
+        print(f"[simo] could not read the clipboard ({type(e).__name__}: {e})", flush=True)
+        return None
 
 
 def _restore_pasteboard(snapshot: list[list[tuple[str, bytes]]]) -> bool:
-    """Put a snapshot back. False if macOS refused the write."""
-    pb = NSPasteboard.generalPasteboard()
-    pb.clearContents()
-    rebuilt = []
-    for pairs in snapshot:
-        item = NSPasteboardItem.alloc().init()
-        for uti, payload in pairs:
-            item.setData_forType_(NSData.dataWithBytes_length_(payload, len(payload)), uti)
-        rebuilt.append(item)
-    return bool(pb.writeObjects_(rebuilt))
+    """Put a snapshot back. False if it could not be done, for any reason."""
+    try:
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        rebuilt = []
+        for pairs in snapshot:
+            item = NSPasteboardItem.alloc().init()
+            for uti, payload in pairs:
+                item.setData_forType_(NSData.dataWithBytes_length_(payload, len(payload)), uti)
+            rebuilt.append(item)
+        return bool(pb.writeObjects_(rebuilt))
+    except Exception as e:
+        # Same contract as above, and the same reason: this runs after the paste
+        # has landed but before the caller records the transcript.
+        print(f"[simo] could not rebuild the clipboard ({type(e).__name__}: {e})", flush=True)
+        return False
 
 
 def _has_any_content() -> bool:
