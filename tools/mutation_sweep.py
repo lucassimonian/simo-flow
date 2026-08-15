@@ -174,6 +174,14 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '                "no audio captured"',
     ),
     # ---- snippets: expansions must fire only when you meant them ----------
+    # The internals below are useless if the call is not in the pipeline at all —
+    # the feature could be silently disconnected with every snippets test green.
+    (
+        "main/snippets-are-actually-expanded",
+        "engine/__main__.py",
+        "            cleaned = snippets.expand(cleaned, store.snippet_map())",
+        "            cleaned = cleaned",
+    ),
     (
         "snippets/whole-phrases-only",
         "engine/snippets.py",
