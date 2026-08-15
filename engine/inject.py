@@ -26,7 +26,14 @@ clipboard critical section here is never entered concurrently.
 """
 import time
 
-from AppKit import NSPasteboard, NSPasteboardTypeString, NSRunningApplication, NSWorkspace
+from AppKit import (
+    NSData,
+    NSPasteboard,
+    NSPasteboardItem,
+    NSPasteboardTypeString,
+    NSRunningApplication,
+    NSWorkspace,
+)
 from ApplicationServices import AXIsProcessTrusted
 from Quartz import (
     CGEventCreateKeyboardEvent,
@@ -38,6 +45,12 @@ from Quartz import (
 
 KEY_V = 9  # kVK_ANSI_V
 KEY_CMD = 55  # kVK_Command
+
+# ponytail: a flat cap, not a streaming copy. Holding the pasteboard in memory for
+# ~300ms is fine for documents and screenshots; a 4K video or a huge file promise
+# is not worth the RAM, and above this we degrade to the old behaviour (clear it)
+# and say so. Raise it if someone hits the limit with something they cared about.
+MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
 
 RESTORE_DELAY = 0.3  # how long the target app gets to consume the paste
 ACTIVATE_DELAY = 0.35  # ceiling on waiting for the re-activated app to take focus
@@ -78,6 +91,60 @@ def _set_clipboard(text: str) -> None:
 
 def _clear_clipboard() -> None:
     NSPasteboard.generalPasteboard().clearContents()
+
+
+def _snapshot_pasteboard() -> list[list[tuple[str, bytes]]] | None:
+    """Every item on the pasteboard, as its full set of (type, data) pairs.
+
+    Reading the pasteboard back as a *string* is lossy in two different ways, and
+    both destroyed user data. An image or file reference has no string form at
+    all, so it came back as None and was cleared. Styled text does have one, so it
+    came back — as plain text, silently stripped of its formatting.
+
+    Capturing the raw representations avoids interpreting the content at all, so
+    anything the user copied survives the round trip unchanged.
+
+    Returns None if the pasteboard is larger than we are willing to hold in
+    memory, in which case the caller falls back to clearing it.
+    """
+    pb = NSPasteboard.generalPasteboard()
+    items = pb.pasteboardItems()
+    if items is None:
+        return []
+    snapshot: list[list[tuple[str, bytes]]] = []
+    total = 0
+    for item in items:
+        pairs: list[tuple[str, bytes]] = []
+        for uti in item.types() or ():
+            data = item.dataForType_(uti)
+            if data is None:
+                continue  # a promised type whose provider declined; nothing to keep
+            payload = bytes(data)
+            total += len(payload)
+            if total > MAX_SNAPSHOT_BYTES:
+                print(
+                    f"[simo] clipboard is over {MAX_SNAPSHOT_BYTES // 1_000_000}MB — "
+                    "it cannot be preserved across this dictation",
+                    flush=True,
+                )
+                return None
+            pairs.append((uti, payload))
+        if pairs:
+            snapshot.append(pairs)
+    return snapshot
+
+
+def _restore_pasteboard(snapshot: list[list[tuple[str, bytes]]]) -> bool:
+    """Put a snapshot back. False if macOS refused the write."""
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    rebuilt = []
+    for pairs in snapshot:
+        item = NSPasteboardItem.alloc().init()
+        for uti, payload in pairs:
+            item.setData_forType_(NSData.dataWithBytes_length_(payload, len(payload)), uti)
+        rebuilt.append(item)
+    return bool(pb.writeObjects_(rebuilt))
 
 
 def _has_any_content() -> bool:
@@ -244,11 +311,11 @@ def paste_text(
             )
             return False
 
-    previous = _get_clipboard() if restore else None
-    # A non-text clipboard (image, file, rich text) can't be read back, so it
-    # can't be restored. Clearing beats leaving the dictation on the pasteboard
-    # for clipboard-history tools to capture.
-    had_nontext = restore and previous is None and _has_any_content()
+    # Snapshot every representation rather than reading the clipboard as a string:
+    # an image has no string form and used to be cleared, and styled text has one
+    # that silently drops its formatting. None means "too large to hold" — see
+    # MAX_SNAPSHOT_BYTES — and is the one case where clearing is still the answer.
+    previous = _snapshot_pasteboard() if restore else None
 
     _set_clipboard(text)
     # Our own write; anything past this value isn't ours. No wait is needed before
@@ -268,9 +335,15 @@ def paste_text(
             # pasteboard inside our window. Their copy is newer than our
             # snapshot, so restoring would destroy it.
             print("[simo] clipboard changed during paste — leaving it alone", flush=True)
-        elif previous is not None:
-            _set_clipboard(previous)
-        elif had_nontext:
+        elif previous:
+            # Never leave our dictation on the pasteboard: if putting the user's
+            # content back fails, an empty clipboard is the lesser harm — a
+            # clipboard-history tool would otherwise capture the transcript.
+            if not _restore_pasteboard(previous):
+                print("[simo] could not restore the clipboard — clearing it", flush=True)
+                _clear_clipboard()
+        else:
+            # Empty before, or too large to snapshot. Either way ours must not stay.
             _clear_clipboard()
     return True
 
