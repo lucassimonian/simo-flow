@@ -212,6 +212,16 @@
   .chips { display: flex; flex-wrap: wrap; gap: 10px; }
   .chip { display: flex; align-items: center; gap: 9px; background: var(--card); border: 1px solid var(--line); border-radius: 980px; padding: 8px 10px 8px 16px; font-size: 14px; box-shadow: var(--shadow); animation: rise .38s var(--ease) forwards; transition: border-color .18s, transform .18s; }
   .chip:hover { border-color: var(--accent); transform: translateY(-1px); }
+  /* Snippets are pairs, so they get rows rather than the dictionary's chips: the
+     phrase and its replacement need to line up down the page to be scannable. */
+  .snips { display: flex; flex-direction: column; gap: 8px; }
+  .snip { display: grid; grid-template-columns: minmax(120px, 1fr) auto minmax(0, 2fr) auto; align-items: center; gap: 14px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; font-size: 14px; box-shadow: var(--shadow); animation: rise .38s var(--ease) forwards; transition: border-color .18s; }
+  .snip:hover { border-color: var(--accent); }
+  .snip-say { font-weight: 560; }
+  .snip-arrow { color: var(--text-2); }
+  .snip-get { color: var(--text-2); overflow-wrap: anywhere; }
+  .snip button { border: none; background: var(--canvas-2); color: var(--text-2); width: 21px; height: 21px; border-radius: 50%; cursor: pointer; font-size: 11px; line-height: 1; transition: background .16s, color .16s; }
+  .snip button:hover { background: var(--accent); color: #fff; }
   .chip button { border: none; background: var(--canvas-2); color: var(--text-2); width: 21px; height: 21px; border-radius: 50%; cursor: pointer; font-size: 11px; line-height: 1; transition: background .16s, color .16s; }
   .chip button:hover { background: var(--accent); color: #fff; }
   .hint { color: var(--text-2); font-size: 14px; line-height: 1.6; margin-bottom: 22px; max-width: 580px; }
@@ -226,6 +236,7 @@
       <a data-p="home" class="active"><span class="ic">◐</span>Home</a>
       <a data-p="insights"><span class="ic">◫</span>Insights</a>
       <a data-p="dictionary"><span class="ic">✦</span>Dictionary</a>
+      <a data-p="snippets"><span class="ic">✂</span>Snippets</a>
       <a data-p="privacy"><span class="ic">⛨</span>Privacy</a>
     </nav>
     <div class="side-foot">
@@ -270,6 +281,20 @@
         <button onclick="addTerm()">Add term</button>
       </div>
       <div class="chips rise" id="chips" style="animation-delay:150ms"></div>
+    </section>
+
+    <!-- SNIPPETS -->
+    <section class="page" id="p-snippets">
+      <div class="head rise"><h1>Snippets</h1></div>
+      <p class="hint rise" style="animation-delay:70ms">The things you shouldn't have to spell out loud.
+        Say the phrase, get the text. <em>Works in Exact mode too — it's your shortcut, not a rewrite.</em></p>
+      <div class="dict-add rise" style="animation-delay:110ms">
+        <input id="snip-phrase" placeholder="say this…  e.g. my email address">
+        <input id="snip-text" placeholder="…get this">
+        <button onclick="addSnippet()">Add snippet</button>
+      </div>
+      <div class="hint" id="snip-err" style="color:var(--danger,#c0392b)"></div>
+      <div class="snips rise" id="snips" style="animation-delay:150ms"></div>
     </section>
 
     <!-- PRIVACY -->
@@ -344,6 +369,7 @@ document.querySelectorAll('nav a').forEach(a => a.onclick = () => {
   $('#p-' + a.dataset.p).classList.add('on');
   location.hash = a.dataset.p;
   if (a.dataset.p === 'insights') loadInsights();
+  if (a.dataset.p === 'snippets') loadSnips();
   if (a.dataset.p === 'privacy') refreshTidy();
 });
 
@@ -455,6 +481,38 @@ async function addTerm() {
 $('#new-term').addEventListener('keydown', e => e.key === 'Enter' && addTerm());
 async function delTerm(id) {
   renderChips(await (await fetch('/api/dictionary/' + id, {method: 'DELETE'})).json());
+}
+
+/* ---- snippets ---- */
+function renderSnips(list) {
+  $('#snips').innerHTML = list.length
+    ? list.map((s, k) => `<div class="snip" style="animation-delay:${k * 35}ms">
+        <span class="snip-say">${esc(s.phrase)}</span><span class="snip-arrow">→</span>
+        <span class="snip-get">${esc(s.expansion)}</span>
+        <button onclick="delSnippet(${s.id})" title="Remove">✕</button></div>`).join('')
+    : '<div class="empty">No snippets yet — try “my email address”.</div>';
+}
+async function loadSnips() { renderSnips(await (await fetch('/api/snippets')).json()); }
+async function addSnippet() {
+  const p = $('#snip-phrase'), t = $('#snip-text'), err = $('#snip-err');
+  err.textContent = '';
+  if (!p.value.trim() || !t.value.trim()) return;
+  const r = await fetch('/api/snippets', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({phrase: p.value, expansion: t.value})});
+  if (!r.ok) {
+    // A snippet that can never fire is worse than a refused one — nothing would
+    // ever tell you why the words you said came out unchanged.
+    err.textContent = (await r.json()).detail || 'That phrase cannot be used.';
+    return;
+  }
+  renderSnips(await r.json());
+  p.value = ''; t.value = '';
+}
+$('#snip-phrase').addEventListener('keydown', e => e.key === 'Enter' && $('#snip-text').focus());
+$('#snip-text').addEventListener('keydown', e => e.key === 'Enter' && addSnippet());
+async function delSnippet(id) {
+  renderSnips(await (await fetch('/api/snippets/' + id, {method: 'DELETE'})).json());
 }
 
 /* ---- privacy ---- */

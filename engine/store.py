@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- "phrase" rather than "trigger": the latter is a SQL keyword and would need
+-- quoting at every single call site to avoid a syntax error nobody expects.
+CREATE TABLE IF NOT EXISTS snippets (
+  id INTEGER PRIMARY KEY,
+  phrase TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  expansion TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -242,6 +250,48 @@ def dictionary_prompt() -> str:
     """Terms joined for whisper's initial_prompt — biases ASR toward your vocab."""
     terms = [d["term"] for d in dictionary_terms()]
     return ("Vocabulary: " + ", ".join(terms) + ".") if terms else ""
+
+
+# ---- snippets -------------------------------------------------------------
+def snippets() -> list[dict]:
+    with _conn() as c:
+        return [
+            {"id": i, "phrase": p, "expansion": e}
+            for i, p, e in c.execute(
+                "SELECT id, phrase, expansion FROM snippets ORDER BY phrase"
+            )
+        ]
+
+
+def snippet_map() -> dict[str, str]:
+    """Just the phrase -> text mapping, for the expansion pass."""
+    return {s["phrase"]: s["expansion"] for s in snippets()}
+
+
+def snippet_add(phrase: str, expansion: str) -> bool:
+    """Save a snippet. False if the phrase could not be matched when spoken.
+
+    Validated here rather than only in the dashboard: a snippet that can never
+    fire is worse than a rejected one, because nothing ever tells you why the
+    words you said came out unchanged.
+    """
+    from engine.snippets import is_valid_trigger
+
+    phrase, expansion = phrase.strip(), expansion.strip()
+    if not expansion or not is_valid_trigger(phrase):
+        return False
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO snippets (phrase, expansion) VALUES (?, ?)"
+            " ON CONFLICT(phrase) DO UPDATE SET expansion = excluded.expansion",
+            (phrase, expansion),
+        )
+    return True
+
+
+def snippet_delete(snippet_id: int) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM snippets WHERE id = ?", (snippet_id,))
 
 
 # ---- settings (key/value) -------------------------------------------------

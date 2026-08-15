@@ -140,6 +140,35 @@ def api_dictionary_add(t: Term, request: Request):
     return store.dictionary_terms()
 
 
+@app.get("/api/snippets")
+def api_snippets():
+    return store.snippets()
+
+
+class Snippet(BaseModel):
+    phrase: str
+    expansion: str
+
+
+@app.post("/api/snippets")
+def api_snippet_add(s: Snippet, request: Request):
+    _reject_cross_origin(request)
+    if not store.snippet_add(s.phrase, s.expansion):
+        raise HTTPException(
+            status_code=400,
+            detail="a phrase must be words you can say — letters, numbers, spaces, "
+            "apostrophes or hyphens — and the replacement cannot be empty",
+        )
+    return store.snippets()
+
+
+@app.delete("/api/snippets/{snippet_id}")
+def api_snippet_delete(snippet_id: int, request: Request):
+    _reject_cross_origin(request)
+    store.snippet_delete(snippet_id)
+    return store.snippets()
+
+
 @app.delete("/api/dictionary/{term_id}")
 def api_dictionary_delete(term_id: int, request: Request):
     _reject_cross_origin(request)

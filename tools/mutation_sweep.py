@@ -173,6 +173,25 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '                "microphone unavailable — see log" if open_failed else "no audio captured"',
         '                "no audio captured"',
     ),
+    # ---- snippets: expansions must fire only when you meant them ----------
+    (
+        "snippets/whole-phrases-only",
+        "engine/snippets.py",
+        'r"\\b(?:" + "|".join(re.escape(t) for t in ordered) + r")\\b", re.IGNORECASE',
+        '"|".join(re.escape(t) for t in ordered), re.IGNORECASE',
+    ),
+    (
+        "snippets/longest-phrase-wins",
+        "engine/snippets.py",
+        "    ordered = sorted(usable, key=len, reverse=True)",
+        "    ordered = sorted(usable)",
+    ),
+    (
+        "snippets/runaway-expansion-is-refused",
+        "engine/snippets.py",
+        "    if len(expanded) > MAX_EXPANDED_CHARS:",
+        "    if False:",
+    ),
     # ---- polish: the dictation-integrity guard ----------------------------
     (
         "polish/subsequence-check",

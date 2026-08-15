@@ -13,7 +13,7 @@ import time
 import rumps
 from Foundation import NSOperationQueue
 
-from engine import audio, inject, polish, store, stt
+from engine import audio, inject, polish, snippets, store, stt
 
 IDLE_TITLE = "🎤"
 REC_TITLE = "🔴"
@@ -372,6 +372,11 @@ class SimoFlow(rumps.App):
                 if polish.needs_cleanup(raw):
                     self.pill.busy("Polishing")
                 cleaned = polish.polish(raw)
+            # After polish, never inside it. polish() guarantees its output is
+            # your own words with fillers removed; a snippet deliberately inserts
+            # words you did not say, so expanding earlier would either be thrown
+            # out by the integrity guard or force it to be loosened for everything.
+            cleaned = snippets.expand(cleaned, store.snippet_map())
             # Stopped when the keystroke lands, not when paste_text returns:
             # the clipboard restore afterwards is housekeeping the user never
             # waits for, and counting it made every reported latency ~300ms
