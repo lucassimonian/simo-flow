@@ -102,7 +102,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '        print("[simo] retrying with a fresh PortAudio device list", flush=True)\n'
         "        self._reinit_portaudio()\n"
         "        if self._open_stream():\n"
-        "            self._device_id = default_input_device()\n"
+        "            if not self._claim(generation, default_input_device()):\n"
+        "                self._close_stream()\n"
+        "                return\n"
         '            print("[simo] mic recovered after re-initialising PortAudio", flush=True)\n'
         "            return\n",
         "",

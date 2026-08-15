@@ -241,9 +241,12 @@ def test_an_oversized_clipboard_is_measured_before_it_is_copied(monkeypatch):
         def length():
             return inject.MAX_SNAPSHOT_BYTES + 1
 
-        def __len__(self):  # bytes(data) would go through here
+        def __bytes__(self):
+            # Must succeed, not raise: a failing bytes() would be swallowed by the
+            # snapshot's own error handling and the test would pass for the wrong
+            # reason — which is precisely what the mutation sweep caught.
             materialised.append("copied")
-            return 0
+            return b"\0" * 1024
 
     class Item:
         @staticmethod
