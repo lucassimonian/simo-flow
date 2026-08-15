@@ -7,8 +7,18 @@ on:
 
 jobs:
   test:
-    name: Lint & test (macOS)
-    runs-on: macos-14
+    # Simo Flow had only ever been proven on one laptop — one macOS version, one
+    # chip. Everything here is hermetic (no microphone, no models, no network), so
+    # there is no reason not to run it across the range users actually have.
+    # macos-13 is Intel; the rest are Apple Silicon. A CoreAudio or ctypes
+    # assumption that only holds on one of them now fails here rather than on
+    # someone's machine.
+    name: Lint & test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false  # knowing it breaks on exactly one of them is the point
+      matrix:
+        os: [macos-13, macos-14, macos-15]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -24,7 +34,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          # setuptools is upgraded explicitly, not incidentally: the runner images
+          # ship a version with a known advisory, and pip-audit below is set to
+          # fail on one. Keeping it current is cheaper than maintaining an
+          # exception list, and an exception list is how a real finding gets
+          # waved through later.
+          python -m pip install --upgrade pip setuptools
           pip install -r requirements-dev.txt
 
       - name: Byte-compile all modules
@@ -53,12 +68,28 @@ jobs:
       # stays green — a guard nothing screams about is a guard that will ship
       # broken. Runs the suite once per mutation, so it is the slowest step here
       # and worth every second of it.
+      #
+      # Pinned to one runner: it rewrites source and re-runs the suite once per
+      # mutation, and the guards it checks are not OS-specific. Running it on all
+      # three would triple the slowest step in CI to re-prove the same thing.
       - name: Mutation sweep — prove each guard is actually tested
+        if: matrix.os == 'macos-14'
         run: python tools/mutation_sweep.py
 
       # The local DB and log hold the plaintext of everything ever dictated, so a
-      # leaked credential in this repo would matter more than most.
+      # leaked credential in this repo would matter more than most. One runner is
+      # enough — git history is the same on all of them.
       - name: Secret scan
+        if: matrix.os == 'macos-14'
         run: |
           brew install gitleaks
           gitleaks detect --redact --no-banner --exit-code 1
+
+      # Dependencies are the one attack surface nobody reads. pip-audit checks the
+      # installed set against the Python advisory database on every push, so a
+      # known CVE in a transitive dependency surfaces here rather than never.
+      - name: Audit dependencies for known vulnerabilities
+        if: matrix.os == 'macos-14'
+        run: |
+          pip install pip-audit
+          pip-audit --strict --desc
