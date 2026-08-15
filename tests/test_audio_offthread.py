@@ -29,10 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import audio  # noqa: E402
 
-# The device op blocks for this long; the caller must return in well under it.
-# Deliberately far apart: a threshold that needs tuning is a flaky test.
+# How long a wedged device operation blocks for. Nothing asserts against a
+# stopwatch — see _wedge — so this only needs to be comfortably longer than the
+# time the test itself takes to reach its assertion.
 WEDGE_SEC = 1.5
-CALLER_BUDGET_SEC = 0.25
 
 
 @pytest.fixture
@@ -46,15 +46,26 @@ def rec(monkeypatch):
 
 
 def _wedge(seconds: float):
-    """A device operation that blocks, and announces when it has started."""
+    """A device operation that blocks, announcing when it starts and finishes.
+
+    `finished` is what makes these tests exact rather than a stopwatch. If a
+    hotkey entry point waited for the device, the operation would necessarily have
+    completed by the time it returned — so `finished` being set is proof of
+    blocking, with no wall-clock threshold to tune and nothing to go flaky on a
+    slow or loaded machine. An earlier version asserted "returned in under 250ms"
+    and failed on CI while passing locally, which is the exact failure mode the
+    project's own rules warn about.
+    """
     started = threading.Event()
+    finished = threading.Event()
 
     def blocking_op(*_a, **_kw):
         started.set()
         time.sleep(seconds)
+        finished.set()
         return True
 
-    return blocking_op, started
+    return blocking_op, started, finished
 
 
 def _feed(rec, seconds: float = 1.0) -> None:
@@ -74,16 +85,14 @@ def test_begin_returns_immediately_when_opening_the_device_blocks(rec, monkeypat
     open, so the caller — the CGEventTap callback — is stuck for WEDGE_SEC and
     the whole machine stops accepting input.
     """
-    blocking_open, started = _wedge(WEDGE_SEC)
+    blocking_open, started, finished = _wedge(WEDGE_SEC)
     monkeypatch.setattr(rec, "_open_stream", blocking_open)
 
-    t0 = time.time()
     rec.begin()
-    elapsed = time.time() - t0
 
-    assert elapsed < CALLER_BUDGET_SEC, (
-        f"begin() held the caller for {elapsed:.2f}s — a CGEventTap callback that "
-        f"blocks this long freezes every key on the machine"
+    assert not finished.is_set(), (
+        "begin() waited for the microphone to open — a CGEventTap callback that "
+        "blocks freezes every key on the machine, not just this app"
     )
     assert started.wait(WEDGE_SEC), "the mic open never ran on the audio thread"
 
@@ -95,17 +104,15 @@ def test_begin_returns_immediately_when_portaudio_reinit_blocks(rec, monkeypatch
     is what connecting AirPods mid-sentence produces), so this fires on the next
     key press with no device change needed.
     """
-    blocking_reinit, started = _wedge(WEDGE_SEC)
+    blocking_reinit, started, finished = _wedge(WEDGE_SEC)
     monkeypatch.setattr(rec, "_reinit_portaudio", blocking_reinit)
     rec._needs_reinit = True
 
-    t0 = time.time()
     rec.begin()
-    elapsed = time.time() - t0
 
-    assert elapsed < CALLER_BUDGET_SEC, (
-        f"begin() held the caller for {elapsed:.2f}s while re-initialising PortAudio — "
-        f"this is the call that froze the machine mid-meeting"
+    assert not finished.is_set(), (
+        "begin() waited for PortAudio to re-initialise — this is the call that "
+        "froze the machine mid-meeting"
     )
     assert started.wait(WEDGE_SEC), "the re-init never ran on the audio thread"
 
@@ -114,16 +121,12 @@ def test_end_returns_immediately_when_closing_the_device_blocks(rec, monkeypatch
     """Releasing the key must not block either — same tap, same consequence."""
     rec.begin()
     _feed(rec, 1.0)
-    blocking_close, started = _wedge(WEDGE_SEC)
+    blocking_close, started, finished = _wedge(WEDGE_SEC)
     monkeypatch.setattr(rec, "_close_stream", blocking_close)
 
-    t0 = time.time()
     samples = rec.end()
-    elapsed = time.time() - t0
 
-    assert elapsed < CALLER_BUDGET_SEC, (
-        f"end() held the caller for {elapsed:.2f}s closing the stream"
-    )
+    assert not finished.is_set(), "end() waited for the microphone to close"
     assert samples is not None, "the audio must still come back while the close runs"
     assert started.wait(WEDGE_SEC), "the close never ran on the audio thread"
 
