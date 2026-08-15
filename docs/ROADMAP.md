@@ -1,10 +1,22 @@
 # Simo Flow — the road to the best local dictation app on Mac
 
-**Goal:** everything Wispr Flow does well, running entirely on your own machine, with nothing sent anywhere.
+**Goal:** everything Wispr Flow does well, running entirely on your own machine,
+with nothing sent anywhere — free, and good enough that thousands of people use it.
 
 This is a programme, not a sprint. One concern per session, sequenced so each one
 stands on the last. Every session has a *done when* that can be checked, not
 argued about.
+
+**Three sessions remain.** An earlier draft listed seven; that was everything
+found rather than everything needed. Modes and per-context vocabulary were cut to
+optional, and the backlog folded into the sessions it belongs to.
+
+**The "thousands of people" goal is what makes packaging non-optional.** Installing
+Simo Flow today means cloning a repo, building a Python environment, installing
+whisper.cpp via Homebrew, downloading models, granting three permissions and
+running a shell script. Almost nobody will — not because they can't, but because
+they won't. A draggable `.app` is not the polish at the end of this programme; it
+is the difference between five users and thousands.
 
 ---
 
@@ -176,18 +188,25 @@ pessimistic) and beats the current baseline by a stated margin.
 
 ---
 
-## Session 5 — Modes and vocabulary
+## Optional — modes, and a dictionary that learns
 
 Superwhisper's most-praised feature is **modes**: per-context prompts and
 vocabularies — one for code, one for email, one for meeting notes. Simo Flow has
-Clean and Exact only.
+Clean and Exact only. Genuine feature parity, but a want rather than a need.
 
-The custom dictionary already exists and is correctly wired into whisper's
-`initial_prompt` (`__main__.py:361`) — the foundation is there, it just isn't
-per-context.
+**Worth more than modes, and much cheaper: a dictionary that fills itself.**
+Whisper transcribed "AirPods" as "iPods" — not because it misheard the sound, but
+because both are plausible words for that sound. Adding "AirPods" to the custom
+dictionary fixed it immediately, because the dictionary is fed to whisper as an
+`initial_prompt` (`__main__.py:361`).
 
-**Done when:** you can dictate into code and into an email and get appropriately
-different output, without changing a setting by hand.
+The upgrade is to stop making that manual: when a dictation is corrected shortly
+after it lands, record the raw → corrected pair and offer to add it. Note this is
+a *language* fix, not an acoustic one — teaching the model a new pronunciation
+would mean adapting the acoustic model, which is a different and far larger
+problem for no extra benefit here.
+
+**Done when:** the same word is never mis-transcribed twice.
 
 ---
 
