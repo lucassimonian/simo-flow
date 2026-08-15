@@ -141,6 +141,10 @@ def test_mic_recovers_when_portaudios_device_list_went_stale(monkeypatch, capsys
 
     r = Recorder()
     r.begin()
+    # begin() deliberately returns before the device is open — it runs on the
+    # fn-key tap, where blocking freezes the machine. The recovery still happens,
+    # just on the audio thread, so wait for it before judging the outcome.
+    assert r._drain_audio_ops(timeout=5.0), "audio thread never finished the open"
     assert r.is_recording is True, "must recover, not fail until the app is restarted"
     assert attempts["reinit"] >= 1, "PortAudio must be re-initialised before retrying"
     assert "recovered" in capsys.readouterr().out.lower()
@@ -161,6 +165,7 @@ def test_mic_that_cannot_open_at_all_says_so_plainly(monkeypatch):
 
     r = Recorder()
     r.begin()
+    assert r._drain_audio_ops(timeout=5.0), "audio thread never finished the open"
     assert r.is_recording is False
     assert r.end() is None
     assert "microphone" in r.reject_reason.lower(), r.reject_reason
@@ -707,6 +712,34 @@ def test_trimming_keeps_the_log_owner_only(tmp_path):
 def test_trim_survives_a_missing_log(tmp_path):
     m = _mainmod()
     assert m._trim_log(str(tmp_path / "nope.log")) is False
+
+
+def test_boot_log_is_made_owner_only(tmp_path, monkeypatch):
+    """launchd creates the boot log 644 — readable by every account on the machine.
+
+    This guard shipped untested: the mutation sweep flagged it as surviving, which
+    means it could have been deleted or broken and nothing would have failed.
+    """
+    import os
+    import stat
+
+    m = _mainmod()
+    boot = tmp_path / "boot.log"
+    boot.write_text("startup\n")
+    os.chmod(boot, 0o644)  # exactly as launchd leaves it
+    monkeypatch.setattr(m, "BOOT_LOG_PATH", str(boot))
+
+    m._harden_boot_log()
+
+    assert stat.S_IMODE(boot.stat().st_mode) == 0o600, "boot log left world-readable"
+
+
+def test_hardening_survives_a_boot_log_that_is_not_there(tmp_path, monkeypatch):
+    """Run by hand rather than under launchd, there is no boot log at all — and a
+    missing file must never stop the app starting."""
+    m = _mainmod()
+    monkeypatch.setattr(m, "BOOT_LOG_PATH", str(tmp_path / "absent.log"))
+    m._harden_boot_log()  # must not raise
 
 
 def test_a_launchd_redirected_stream_is_never_kept_as_a_sink(tmp_path):

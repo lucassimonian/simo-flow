@@ -486,6 +486,28 @@ def _keep_stream(stream) -> bool:
         return False
 
 
+def _harden_boot_log() -> None:
+    """Make the launchd boot log owner-only.
+
+    launchd creates it with the default umask — mode 644, readable by every
+    account on the machine. Nothing else hardens it, and a crash trace can still
+    name file paths even now that transcripts never reach it.
+
+    A module-level function rather than four lines inside _tee_logs() because
+    _tee_logs() replaces the process's stdout and stderr, which makes it
+    effectively untestable — and this guard shipped untested for exactly that
+    reason. CI caught it as a surviving mutation.
+    """
+    import os
+
+    try:
+        boot = os.path.expanduser(BOOT_LOG_PATH)
+        if os.path.exists(boot):
+            os.chmod(boot, 0o600)
+    except OSError:
+        pass  # a boot log we can't chmod must not stop the app starting
+
+
 def _tee_logs() -> None:
     """Mirror stdout/stderr to ~/.simo-flow.log so failures survive a closed
     terminal (or a .app launch with no terminal at all). The log holds plaintext
@@ -504,15 +526,7 @@ def _tee_logs() -> None:
     os.chmod(path, 0o600)  # tighten even if it pre-existed world-readable
     log = os.fdopen(fd, "a", buffering=1)
 
-    # launchd creates the boot log with the default umask — mode 644, readable by
-    # every account on the machine. Nothing else hardens it, and a crash trace can
-    # still name file paths even now that transcripts never reach it.
-    try:
-        boot = os.path.expanduser(BOOT_LOG_PATH)
-        if os.path.exists(boot):
-            os.chmod(boot, 0o600)
-    except OSError:
-        pass  # a boot log we can't chmod must not stop the app starting
+    _harden_boot_log()
 
     # An older LaunchAgent points stdout/stderr at our own log. Adding our handle
     # on top of that writes every line twice, so let the real stream be the only
