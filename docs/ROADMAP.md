@@ -94,6 +94,27 @@ to Simo Flow are:
 
 ---
 
+## What Wispr Flow actually ships
+
+Read out of the shipped bundle, not from marketing. This is the list to take from
+and the list to refuse.
+
+| Their feature | Evidence | Simo Flow | Call |
+|---|---|---|---|
+| **Voice commands** — say "press enter", "new line", "select all" and it acts instead of typing it | 305 / 30 / 58 references | ❌ | **Take.** Cheap, and the most-used thing they have |
+| **Streaming / interim results** — text appears while you talk | `streaming`, `interim` | ❌ waits for key release | **Take.** This is why they feel instant |
+| **Hands-free on its own hotkey** — "Dictate hands-free by pressing this hotkey to start and stop", plus a warning when it overlaps push-to-talk | `settings_hotkey_dialog_hands_free_*`, `ptt_hands_free_overlap` | double-tap only | **Take** — and it is *safer* than issue #12's proposal, see below |
+| **Style / tone matching** per app | `styleDetection`, `toneMatch` | ❌ | Take later |
+| **Multilingual** | 6,145 language references | English-first | Take later |
+| **Screen + active-app context** | `screenContext`, `activeApp` | ❌ | **Refuse.** This is the screenshot behaviour behind their 2.7/5 rating. It is their liability, not their moat |
+| Custom vocabulary | `vocabulary` | ✅ | Parity already |
+| Refuses to reword what you said | — | ✅ **only Simo Flow** | Keep. Nothing else has it |
+| Nothing leaves the machine | — | ✅ **only Simo Flow** | Keep. They structurally cannot match it |
+
+**The method, not just the list:** take what is genuinely good, refuse what is
+cheap, ship the good part done properly. Copying their context-awareness would
+import the exact criticism they get.
+
 ## Session 1 — Kill the freeze ✅
 
 **Shipped in PR #17.**
@@ -187,6 +208,24 @@ figures have been wrong before — a previous release's numbers were ~300ms
 pessimistic) and beats the current baseline by a stated margin.
 
 ---
+
+## Issue #12 — hands-free, reshaped by what Wispr actually does
+
+The issue proposes: hold fn to talk, tap a second key mid-hold to lock recording
+on. That would mean surgery on `_claim_utterance` — the logic deciding which of
+three paths owns a recording, which has already produced one user-visible bug
+where a deliberate commit was thrown away and reported as "no audio captured".
+
+**Nobody ships that.** Wispr gives hands-free its own configurable hotkey: press
+to start, press again to stop. They also warn when it overlaps the push-to-talk
+key, which says they treat the interaction between the two modes as a hazard —
+the same concern, reached independently.
+
+A separate hotkey is a *new entry point*. It never touches the ownership state
+machine, so it is both the industry answer and the lower-risk one.
+
+**Plan:** hands-free on its own hotkey, double-tap kept for anyone used to it, and
+the hold-then-lock framing closed as the wrong shape with the reasoning recorded.
 
 ## Optional — modes, and a dictionary that learns
 
