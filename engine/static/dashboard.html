@@ -286,6 +286,17 @@
         </div>
       </div>
 
+      <div class="panel rise" id="tidy-panel" style="animation-delay:135ms; display:none">
+        <h3>Tidy up older dictations</h3>
+        <div class="sub"><span id="tidy-count"></span> were saved before Simo Flow learned to remove
+          the speech engine's line breaks, so they read with breaks in the middle of sentences.
+          This only changes spacing — never a word — and your history is backed up first.</div>
+        <div class="dict-add" style="margin-top:14px">
+          <button onclick="tidyHistory()">Tidy them up</button>
+          <span class="hint" id="tidy-msg"></span>
+        </div>
+      </div>
+
       <div class="panel rise danger" style="animation-delay:160ms">
         <h3>Delete your history</h3>
         <div class="sub">Removes every stored dictation from this Mac permanently. Your dictionary and
@@ -333,6 +344,7 @@ document.querySelectorAll('nav a').forEach(a => a.onclick = () => {
   $('#p-' + a.dataset.p).classList.add('on');
   location.hash = a.dataset.p;
   if (a.dataset.p === 'insights') loadInsights();
+  if (a.dataset.p === 'privacy') refreshTidy();
 });
 
 /* ---- home feed ---- */
@@ -446,6 +458,21 @@ async function delTerm(id) {
 }
 
 /* ---- privacy ---- */
+// The tidy-up panel only exists for people upgrading from before v2.1.1. Hidden
+// entirely when there is nothing to fix, rather than shown greyed out — a control
+// that never does anything is clutter on a page about trust.
+async function refreshTidy() {
+  const { count } = await (await fetch('/api/history/needs-flatten')).json();
+  if (!count) { $('#tidy-panel').style.display = 'none'; return; }
+  $('#tidy-count').textContent = `${count} dictation${count === 1 ? '' : 's'}`;
+  $('#tidy-panel').style.display = '';
+}
+async function tidyHistory() {
+  const r = await (await fetch('/api/history/flatten', {method: 'POST'})).json();
+  $('#tidy-msg').textContent = `Tidied ${r.updated} dictation${r.updated === 1 ? '' : 's'}.`;
+  await refreshTidy();
+  loadFeed();
+}
 async function exportHistory() {
   const rows = await (await fetch('/api/history/export')).json();
   // Built and revoked client-side: the export never touches the network.

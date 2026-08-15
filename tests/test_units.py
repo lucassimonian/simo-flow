@@ -466,6 +466,12 @@ def test_history_delete_is_refused_cross_origin(client):
     assert bad.status_code == 403
 
 
+def test_history_flatten_is_refused_cross_origin(client):
+    """It rewrites stored dictations, so it is a write like any other."""
+    bad = client.post("/api/history/flatten", headers={**GOOD_HOST, "Origin": "http://evil.com"})
+    assert bad.status_code == 403
+
+
 SAME_ORIGIN = {**GOOD_HOST, "Origin": "http://127.0.0.1:7331"}
 # fetch() omits Origin on same-origin GETs, so this is what the dashboard's own
 # export request actually looks like on the wire.
@@ -712,6 +718,87 @@ def test_trimming_keeps_the_log_owner_only(tmp_path):
 def test_trim_survives_a_missing_log(tmp_path):
     m = _mainmod()
     assert m._trim_log(str(tmp_path / "nope.log")) is False
+
+
+def test_old_dictations_can_be_stripped_of_whispers_line_wrapping(tmp_path, monkeypatch):
+    """Rows written before v2.1.1 still break mid-sentence in the feed and exports.
+
+    The migration must produce exactly what a new dictation would, which is why it
+    reuses stt.flatten_whitespace rather than its own rule.
+    """
+    import engine.store as store
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "h.db")
+
+    store.log_dictation("raw one", "It could be that we don't have enough\n candidates.", 100)
+    store.log_dictation("raw two", "Already flat.", 100)
+
+    assert store.history_needing_flatten() == 1
+    assert store.flatten_history() == 1
+    assert store.history_needing_flatten() == 0
+
+    texts = [r["polished_text"] for r in store.history()]
+    assert "It could be that we don't have enough candidates." in texts
+    assert "Already flat." in texts, "a row that needed nothing must not be touched"
+
+
+def test_flattening_history_backs_the_database_up_first(tmp_path, monkeypatch):
+    """It rewrites words the user actually spoke. A restore path is not optional."""
+    import engine.store as store
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "h.db")
+    store.log_dictation("raw", "wrapped\n text", 100)
+
+    store.flatten_history()
+
+    backups = list(tmp_path.glob("h.db.bak-*"))
+    assert len(backups) == 1, f"no backup was taken; found {backups}"
+    assert backups[0].stat().st_size > 0
+
+    import stat as stat_mod
+
+    assert stat_mod.S_IMODE(backups[0].stat().st_mode) == 0o600, "backup left readable by others"
+
+
+def test_the_backup_is_a_real_database_holding_the_pre_migration_text(tmp_path, monkeypatch):
+    """A backup that might not open is not a restore path.
+
+    Two threads write this database on separate connections — the dictation
+    pipeline and the dashboard's API server — so copying the file while one is
+    mid-transaction can produce a torn, unopenable snapshot. SQLite's own backup
+    API is the only thing that guarantees a consistent one.
+    """
+    import sqlite3
+
+    import engine.store as store
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "h.db")
+    store.log_dictation("raw one", "It breaks\n mid sentence.", 100)
+
+    assert store.flatten_history() == 1
+
+    backup = next(iter(tmp_path.glob("h.db.bak-*")))
+    conn = sqlite3.connect(backup)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        saved = conn.execute("SELECT polished_text FROM history").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert "\n" in saved, "the backup must hold the text as it was BEFORE the rewrite"
+    assert store.history()[0]["polished_text"] == "It breaks mid sentence."
+
+
+def test_tidying_nothing_writes_nothing(tmp_path, monkeypatch):
+    """Pressing the button twice must not leave a second copy of every word you
+    have ever dictated sitting in your home folder."""
+    import engine.store as store
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "h.db")
+    store.log_dictation("clean raw", "Already flat.", 100)
+
+    assert store.flatten_history() == 0
+    assert list(tmp_path.glob("h.db.bak-*")) == [], "backed up with nothing to back up"
 
 
 def test_boot_log_is_made_owner_only(tmp_path, monkeypatch):

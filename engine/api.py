@@ -106,6 +106,19 @@ def api_history_clear(request: Request):
     return {"deleted": store.clear_history()}
 
 
+@app.get("/api/history/needs-flatten")
+def api_history_needs_flatten():
+    """How many stored dictations still carry the speech engine's line wrapping.
+    A count of rows, revealing none of their content, so it needs no origin guard."""
+    return {"count": store.history_needing_flatten()}
+
+
+@app.post("/api/history/flatten")
+def api_history_flatten(request: Request):
+    _reject_cross_origin(request)
+    return {"updated": store.flatten_history()}
+
+
 @app.get("/api/insights")
 def api_insights():
     return store.insights()

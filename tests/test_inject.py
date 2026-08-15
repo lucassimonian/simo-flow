@@ -23,14 +23,22 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+STRING_TYPE = "public.utf8-plain-text"
+
+
 class FakeMac:
     """Stand-in for the macOS surfaces inject.py talks to.
 
-    Models the one behaviour that matters and is easy to get wrong: the
-    pasteboard's changeCount increments on *every* write, from any process.
+    Models the two behaviours that matter and are easy to get wrong:
+
+      * the pasteboard's changeCount increments on *every* write, from any process
+      * the pasteboard is a list of items, each carrying the same content in
+        several representations — an image, a file reference, or rich text is not
+        a string and is destroyed by anything that round-trips it as one
     """
 
     def __init__(self, clipboard="old clipboard", trusted=True, frontmost=501):
+        self.items: list[list[tuple[str, bytes]]] = []
         self.clipboard = clipboard
         self.trusted = trusted
         self.change_count = 1
@@ -41,6 +49,31 @@ class FakeMac:
         self.logs: list[str] = []
 
     # --- pasteboard ---
+    # `clipboard` stays a plain string for the tests that only care about text;
+    # underneath, the pasteboard is modelled properly as typed items.
+    @property
+    def clipboard(self):
+        for item in self.items:
+            for uti, data in item:
+                if uti == STRING_TYPE:
+                    return data.decode()
+        return None
+
+    @clipboard.setter
+    def clipboard(self, text):
+        self.items = [[(STRING_TYPE, text.encode())]] if text is not None else []
+
+    def hold_image(self, payload=b"\x89PNG\r\n\x1a\n-fake-image"):
+        """The user copied a picture. No string representation exists."""
+        self.items = [[("public.png", payload)]]
+        self.change_count += 1
+
+    def hold_rich_text(self, rtf=rb"{\rtf1 bold thing}", plain="bold thing"):
+        """The user copied styled text. It *does* have a string representation —
+        which is exactly the trap: reading it back as a string loses the styling."""
+        self.items = [[("public.rtf", rtf), (STRING_TYPE, plain.encode())]]
+        self.change_count += 1
+
     def get_clipboard(self):
         return self.clipboard
 
@@ -49,11 +82,19 @@ class FakeMac:
         self.change_count += 1
 
     def clear_clipboard(self):
-        self.clipboard = None
+        self.items = []
         self.change_count += 1
 
     def has_any_content(self):
-        return self.clipboard is not None
+        return bool(self.items)
+
+    def snapshot_pasteboard(self):
+        return [list(item) for item in self.items]
+
+    def restore_pasteboard(self, snapshot):
+        self.items = [list(item) for item in snapshot]
+        self.change_count += 1
+        return True
 
     def get_change_count(self):
         return self.change_count
@@ -89,6 +130,8 @@ def mac(monkeypatch):
     monkeypatch.setattr(inject, "_set_clipboard", fake.set_clipboard)
     monkeypatch.setattr(inject, "_clear_clipboard", fake.clear_clipboard)
     monkeypatch.setattr(inject, "_has_any_content", fake.has_any_content)
+    monkeypatch.setattr(inject, "_snapshot_pasteboard", fake.snapshot_pasteboard)
+    monkeypatch.setattr(inject, "_restore_pasteboard", fake.restore_pasteboard)
     monkeypatch.setattr(inject, "_change_count", fake.get_change_count)
     monkeypatch.setattr(inject, "_is_trusted", fake.is_trusted)
     monkeypatch.setattr(inject, "_capture_focus", fake.capture_focus)
@@ -161,6 +204,161 @@ def test_clipboard_not_restored_when_user_copied_during_paste(mac, monkeypatch):
 # --------------------------------------------------------------------------
 # 1. Focus captured at record-start, restored before pasting
 # --------------------------------------------------------------------------
+def test_a_clipboard_that_cannot_be_read_never_raises(monkeypatch):
+    """A failure here must cost the clipboard, never the dictation.
+
+    paste_text() promises to always return, and its caller only saves the
+    transcript *after* it returns (__main__._run_pipeline). An exception escaping
+    the snapshot would therefore destroy the words the user just spoke — the
+    primary result — to protect a side effect. That is lesson 007 exactly.
+    """
+    import engine.inject as inject
+
+    class Exploding:
+        @staticmethod
+        def generalPasteboard():
+            raise RuntimeError("pasteboard unavailable")
+
+    monkeypatch.setattr(inject, "NSPasteboard", Exploding)
+
+    assert inject._snapshot_pasteboard() is None
+    assert inject._restore_pasteboard([[("public.png", b"x")]]) is False
+
+
+def test_an_oversized_clipboard_is_measured_before_it_is_copied(monkeypatch):
+    """The cap must bound the allocation, not merely the check.
+
+    Reading the bytes and *then* testing the size means a multi-gigabyte file
+    promise is already resident in memory by the time the limit trips — which is
+    the one thing the limit exists to prevent.
+    """
+    import engine.inject as inject
+
+    materialised: list[str] = []
+
+    class HugeData:
+        @staticmethod
+        def length():
+            return inject.MAX_SNAPSHOT_BYTES + 1
+
+        def __bytes__(self):
+            # Must succeed, not raise: a failing bytes() would be swallowed by the
+            # snapshot's own error handling and the test would pass for the wrong
+            # reason — which is precisely what the mutation sweep caught.
+            materialised.append("copied")
+            return b"\0" * 1024
+
+    class Item:
+        @staticmethod
+        def types():
+            return ["public.movie"]
+
+        @staticmethod
+        def dataForType_(_uti):
+            return HugeData()
+
+    class Pasteboard:
+        @staticmethod
+        def generalPasteboard():
+            return Pasteboard()
+
+        @staticmethod
+        def pasteboardItems():
+            return [Item()]
+
+    monkeypatch.setattr(inject, "NSPasteboard", Pasteboard)
+
+    assert inject._snapshot_pasteboard() is None, "oversized clipboard must not be snapshotted"
+    assert materialised == [], "the payload was copied into memory before being measured"
+
+
+def test_paste_uses_the_key_that_types_v_on_this_layout(mac, monkeypatch):
+    """Virtual key codes are positions, not letters.
+
+    kVK_ANSI_V is wherever "v" sits on a US keyboard. On Dvorak that position is
+    ".", on AZERTY something else again — so posting it blindly sent Cmd+the wrong
+    key and paste silently did nothing (or worse) for anyone not on QWERTY.
+    """
+    monkeypatch.setattr(mac.inject, "_keycode_for_character", lambda ch: 47 if ch == "v" else None)
+
+    assert mac.inject.paste_text("hello") is True
+
+    pressed = [code for code, down, _flags in mac.keys if down and code != mac.inject.KEY_CMD]
+    assert pressed == [47], f"pasted with the US position instead of this layout's: {mac.keys}"
+
+
+def test_paste_falls_back_to_the_us_position_when_the_layout_is_unreadable(mac, monkeypatch):
+    """Some input sources — handwriting, certain IMEs — expose no layout at all.
+    Pasting with the US position is what the app always did, so it is the right
+    thing to degrade to. Failing to paste would be far worse than guessing."""
+    monkeypatch.setattr(mac.inject, "_keycode_for_character", lambda ch: None)
+
+    assert mac.inject.paste_text("hello") is True
+
+    pressed = [code for code, down, _flags in mac.keys if down and code != mac.inject.KEY_CMD]
+    assert pressed == [mac.inject.KEY_V]
+
+
+def test_the_real_layout_lookup_agrees_with_the_us_constant_on_a_us_layout(mac):
+    """Guards the ctypes plumbing itself, not the orchestration around it.
+
+    A wrong signature or a misread property would return None and be invisible —
+    the fallback would quietly paste correctly on the machine running the tests
+    and wrongly everywhere else.
+    """
+    import engine.inject as real
+
+    found = real._keycode_for_character("v")
+    if found is None:
+        pytest.skip("no readable keyboard layout on this machine")
+    assert found == real.KEY_V, (
+        f"the layout API says 'v' is keycode {found} but kVK_ANSI_V is {real.KEY_V} — "
+        f"either this machine is not on a US layout, or the lookup is wrong"
+    )
+
+
+def test_a_copied_image_survives_dictating(mac):
+    """Dictating must not destroy something the user copied.
+
+    An image has no string representation, so reading the pasteboard back as text
+    returns nothing — and the old code cleared it on the grounds that leaving the
+    dictation there was worse. Both options lose the picture. Snapshotting the
+    typed data loses neither.
+    """
+    mac.hold_image()
+
+    assert mac.inject.paste_text("dictated words") is True
+
+    types = [uti for item in mac.items for uti, _ in item]
+    assert "public.png" in types, f"the copied image was destroyed; clipboard now {types}"
+    assert mac.clipboard != "dictated words", "the dictation was left on the pasteboard"
+
+
+def test_rich_text_keeps_its_formatting(mac):
+    """The subtler half of the same bug, and not in the issue.
+
+    Styled text *does* have a string representation, so the old code restored it
+    happily — as plain text, silently dropping every bit of formatting. A restore
+    that quietly downgrades the content is still data loss.
+    """
+    mac.hold_rich_text()
+
+    assert mac.inject.paste_text("dictated words") is True
+
+    types = [uti for item in mac.items for uti, _ in item]
+    assert "public.rtf" in types, f"formatting was lost on restore; clipboard now {types}"
+    assert mac.clipboard == "bold thing"
+
+
+def test_an_empty_clipboard_is_left_empty(mac):
+    """Nothing was copied, so nothing should be put back — least of all ours."""
+    mac.clear_clipboard()
+
+    assert mac.inject.paste_text("dictated words") is True
+
+    assert mac.items == [], f"pasteboard should be empty, holds {mac.items}"
+
+
 def test_paste_activates_the_window_focused_when_recording_started(mac):
     focus = mac.inject.capture_focus()  # user presses fn while in app 501
     mac.frontmost = 999  # they click away during transcription
@@ -270,10 +468,17 @@ def test_on_pasted_fires_when_the_text_lands_not_when_cleanup_finishes(mac, monk
     monkeypatch.setattr(
         mac.inject, "_set_clipboard", lambda t: (order.append(f"set:{t}"), mac.set_clipboard(t))[1]
     )
+    # The restore now rebuilds every typed representation rather than writing a
+    # string back, so the spy has to watch that call instead of _set_clipboard.
+    monkeypatch.setattr(
+        mac.inject,
+        "_restore_pasteboard",
+        lambda s: (order.append("restored"), mac.restore_pasteboard(s))[1],
+    )
     mac.inject.paste_text("hello", on_pasted=lambda: order.append("pasted"))
     assert order.index("pasted") > order.index("set:hello"), "fires after the keystroke"
     assert order[-1] != "pasted", "the clipboard restore must still happen afterwards"
-    assert order[-1].startswith("set:old"), "and it is the restore that comes last"
+    assert order[-1] == "restored", "and it is the clipboard restore that comes last"
 
 
 def test_paste_still_works_without_a_focus_snapshot(mac):

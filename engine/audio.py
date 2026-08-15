@@ -183,6 +183,22 @@ class Recorder:
             generation = self._generation
         self._audio_q.put(lambda: self._prepare_device(generation))
 
+    def _claim(self, generation: int, device: int | None) -> bool:
+        """Record a successful open — unless a newer press already owns the recorder.
+
+        Staleness has to be checked on success, not only on failure. A slow open
+        that finally succeeds after the user has released and pressed again would
+        otherwise publish its stream into the *new* utterance: frames from the new
+        press start landing in it, and the close queued by the old press then shuts
+        it mid-sentence. The audio lost that way is silent — no error, no
+        reject_reason, just a gap in what the user said.
+        """
+        with self._lock:
+            if generation != self._generation:
+                return False
+            self._device_id = device
+            return True
+
     def _prepare_device(self, generation: int) -> None:
         """Open the mic, recovering from a stale device list. Audio thread only.
 
@@ -202,7 +218,8 @@ class Recorder:
             self._reinit_portaudio()
             self._needs_reinit = False
         if self._open_stream():
-            self._device_id = device
+            if not self._claim(generation, device):
+                self._close_stream()
             return
 
         # A failed open almost always means PortAudio's cached device list went
@@ -220,7 +237,9 @@ class Recorder:
         print("[simo] retrying with a fresh PortAudio device list", flush=True)
         self._reinit_portaudio()
         if self._open_stream():
-            self._device_id = default_input_device()
+            if not self._claim(generation, default_input_device()):
+                self._close_stream()
+                return
             print("[simo] mic recovered after re-initialising PortAudio", flush=True)
             return
 
