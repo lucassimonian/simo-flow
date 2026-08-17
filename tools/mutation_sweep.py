@@ -83,6 +83,18 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        if not _wait_until(lambda: _same_app(_capture_focus(), focus), ACTIVATE_DELAY):",
         "        if False:",
     ),
+    (
+        "main/hold-is-timed-at-the-key-not-after-the-hop",
+        "engine/__main__.py",
+        "        self._on_main(lambda at=time.time(): self._on_press(at))",
+        "        self._on_main(lambda: self._on_press())",
+    ),
+    (
+        "main/release-is-timed-at-the-key-not-after-the-hop",
+        "engine/__main__.py",
+        "        self._on_main(lambda at=time.time(): self._on_release(at))",
+        "        self._on_main(lambda: self._on_release())",
+    ),
     # ---- hotkey: the tap sits inside the system input pipeline -------------
     # Everything here is felt by every key in every app, so each guard is one the
     # user notices immediately: a swallowed keystroke, a duplicated dictation, or

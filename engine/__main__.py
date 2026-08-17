@@ -109,8 +109,11 @@ class SimoFlow(rumps.App):
         from engine.overlay import RecordingPill
 
         self.pill = RecordingPill(on_cancel=self._cancel_clicked, on_commit=self._commit_clicked)
-        self.listener = HotkeyListener(self._on_press, self._on_release)
-        self._try_attach()  # tolerant of missing permissions; retries until granted
+        self.listener = HotkeyListener(self._tap_press, self._tap_release)
+        # The tap gets its own thread. See HotkeyListener.serve: a busy main
+        # runloop can otherwise get it disabled by macOS, and while it is off the
+        # fn key does nothing with no indication why.
+        threading.Thread(target=self._serve_hotkey, daemon=True, name="simo-hotkey").start()
 
         # single serialized pipeline worker
         threading.Thread(target=self._worker, daemon=True, name="simo-pipeline").start()
@@ -121,27 +124,51 @@ class SimoFlow(rumps.App):
             target=lambda: polish.polish("warm up"), daemon=True).start(), WARM_PING_SEC)
         self._warm.start()
 
-    def _try_attach(self, _timer=None) -> None:
-        """Attach the fn-key listener. If Input Monitoring/Accessibility aren't
-        granted yet (common on a fresh login-launch), stay alive with a clear
-        status and retry — instead of crashing, which under launchd's KeepAlive
-        turns into a restart loop."""
-        try:
-            self.listener.attach()
-        except PermissionError:
-            self.title = "⚠️"
-            self.status_item.title = "Grant Input Monitoring + Accessibility…"
-            self.status_item.set_callback(self._open_privacy)
-            rumps.Timer(self._retry_attach_once, 3.0).start()
-            print("[simo] fn listener needs permissions — retrying every 3s", flush=True)
+    def _serve_hotkey(self) -> None:
+        """Own the fn-key tap on this thread for the life of the app.
+
+        Retries rather than crashing when Input Monitoring or Accessibility aren't
+        granted yet, which is normal on a fresh login-launch: under launchd's
+        KeepAlive a crash becomes a restart loop, and the user sees an app that
+        will not stay open instead of one telling them what to grant.
+        """
+        while True:
+            try:
+                self.listener.attach()
+            except PermissionError:
+                self._on_main(self._hotkey_needs_permission)
+                print("[simo] fn listener needs permissions — retrying every 3s", flush=True)
+                time.sleep(3.0)
+                continue
+            self._on_main(self._hotkey_ready)
+            self.listener.serve()  # blocks here until quit
             return
+
+    def _hotkey_needs_permission(self) -> None:
+        """Main thread: the menu bar cannot be touched from the hotkey thread."""
+        self.title = "⚠️"
+        self.status_item.title = "Grant Input Monitoring + Accessibility…"
+        self.status_item.set_callback(self._open_privacy)
+
+    def _hotkey_ready(self) -> None:
         self.status_item.title = READY_STATUS
         self.status_item.set_callback(None)
         self.title = IDLE_TITLE
 
-    def _retry_attach_once(self, timer) -> None:
-        timer.stop()
-        self._try_attach()
+    # ---- the tap's two callbacks (hotkey thread) -------------------------
+    def _tap_press(self) -> None:
+        """Runs on the hotkey thread and must return immediately.
+
+        Stamps the moment the key actually moved, then hands the state machine to
+        the main thread where every UI call it makes belongs. The timestamp is
+        taken *here* rather than in _on_press because a busy main thread can delay
+        delivery: measuring after the hop would shorten a hold that was really
+        long enough, and turn push-to-talk into a discarded tap.
+        """
+        self._on_main(lambda at=time.time(): self._on_press(at))
+
+    def _tap_release(self) -> None:
+        self._on_main(lambda at=time.time(): self._on_release(at))
 
     def _open_privacy(self, _item) -> None:
         import webbrowser
@@ -158,6 +185,13 @@ class SimoFlow(rumps.App):
     def _quit(self, _item) -> None:
         """Tear down child process and mic stream, then terminate."""
         print("[simo] quitting — stopping whisper-server and mic stream", flush=True)
+        try:
+            # Release the event tap before anything slower. Leaving a filtering tap
+            # attached while the process winds down means every keystroke on the
+            # machine is still routed through an app that is going away.
+            self.listener.stop()
+        except Exception:
+            pass
         try:
             stt.stop_server()
         except Exception:
@@ -203,8 +237,9 @@ class SimoFlow(rumps.App):
             self._ui_status("Model switch failed — see log")
 
     # ---- fn state machine (runs on the main runloop) -----------------
-    def _on_press(self) -> None:
-        self._t_down = time.time()
+    def _on_press(self, at: float | None = None) -> None:
+        # `at` is when the key physically moved, stamped on the hotkey thread.
+        self._t_down = time.time() if at is None else at
         with self._tap_lock:
             self._fn_down = True
         if self._locked:
@@ -222,10 +257,10 @@ class SimoFlow(rumps.App):
             self._focus = inject.capture_focus()
         self._show_recording()
 
-    def _on_release(self) -> None:
+    def _on_release(self, at: float | None = None) -> None:
         with self._tap_lock:
             self._fn_down = False
-        now = time.time()
+        now = time.time() if at is None else at
         held = now - self._t_down
 
         if self._locked:  # any fn release while locked = stop & commit

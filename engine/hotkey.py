@@ -10,6 +10,9 @@ from Quartz import (
     CFMachPortCreateRunLoopSource,
     CFRunLoopAddSource,
     CFRunLoopGetCurrent,
+    CFRunLoopRun,
+    CFRunLoopStop,
+    CFRunLoopWakeUp,
     CGEventGetFlags,
     CGEventTapCreate,
     CGEventTapEnable,
@@ -37,6 +40,7 @@ class HotkeyListener:
         self.on_release = on_release
         self._down = False
         self._tap = None
+        self._loop = None  # the runloop serve() is driving, for stop()
 
     def _handle(self, proxy, etype, event, refcon):
         # macOS disables slow taps; re-enable and let the event pass
@@ -84,6 +88,29 @@ class HotkeyListener:
         source = CFMachPortCreateRunLoopSource(None, self._tap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes)
         CGEventTapEnable(self._tap, True)
+
+    def serve(self) -> None:
+        """Drive this thread's runloop until stop(). Call on the thread that attached.
+
+        Deliberately its own thread rather than the app's main runloop. macOS
+        switches off a tap that does not answer promptly, and the main runloop is
+        where every AppKit redraw, menu update and timer already competes — so a
+        busy interface can get the fn key disabled with nothing on screen to say
+        why. The recovery path in _handle puts it back, but recovery is a worse
+        guarantee than never being disabled: while it is off, key-ups are missed.
+
+        The tap must be added to the runloop that services it, so attach() and
+        serve() have to run on the same thread.
+        """
+        self._loop = CFRunLoopGetCurrent()
+        CFRunLoopRun()
+
+    def stop(self) -> None:
+        """End serve(). Safe to call from another thread — which is the point, since
+        the serving thread is blocked inside CFRunLoopRun and cannot end itself."""
+        if self._loop is not None:
+            CFRunLoopStop(self._loop)
+            CFRunLoopWakeUp(self._loop)  # a runloop idle with no sources ignores stop alone
 
 
 if __name__ == "__main__":
