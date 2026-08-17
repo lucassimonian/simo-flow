@@ -612,6 +612,68 @@ def test_a_failed_paste_still_records_the_dictation(monkeypatch, tmp_path):
     assert flashes and "saved" in flashes[0].lower(), f"and say where it went: {flashes}"
 
 
+def test_snippets_are_expanded_during_a_real_dictation(tmp_path, monkeypatch):
+    """The feature must actually be wired in, not merely implemented.
+
+    test_snippets.py covers the matching rules and the store, but neither would
+    fail if the call vanished from the pipeline — the whole feature could be
+    silently disconnected with the suite still green. This drives the real
+    pipeline and asserts on what reaches the paste.
+
+    It also pins the ordering: expansion happens after polish, so what gets pasted
+    and what gets stored both contain the replacement rather than the trigger.
+    """
+    import numpy as np
+
+    m = _mainmod()
+    import engine.inject as inject_mod
+    import engine.polish as polish_mod
+    import engine.store as store_mod
+    import engine.stt as stt_mod
+
+    monkeypatch.setattr(store_mod, "DB_PATH", tmp_path / "snippet_pipeline.db")
+    assert store_mod.snippet_add("my email address", "lucas@example.com") is True
+
+    monkeypatch.setattr(stt_mod, "transcribe", lambda *a, **k: "Send it to my email address.")
+    monkeypatch.setattr(store_mod, "dictionary_prompt", lambda: "")
+    monkeypatch.setattr(polish_mod, "needs_cleanup", lambda _t: False)
+    monkeypatch.setattr(polish_mod, "polish", lambda t, *a, **k: t)
+
+    pasted: list[str] = []
+
+    def fake_paste(text, focus=None, on_pasted=None, **_kw):
+        pasted.append(text)
+        if on_pasted:
+            on_pasted()
+        return True
+
+    monkeypatch.setattr(inject_mod, "paste_text", fake_paste)
+
+    class BarePill:
+        def busy(self, stage=""):
+            pass
+
+        def flash(self, msg, hold_sec=1.6):
+            pass
+
+        def hide(self):
+            pass
+
+    class Bare:
+        exact_mode = False
+        pill = BarePill()
+
+        def _ui_title(self, _t):
+            pass
+
+    m.SimoFlow._run_pipeline(Bare(), np.zeros(16000, dtype=np.float32), None)
+
+    assert pasted == ["Send it to lucas@example.com."], f"snippet never fired: {pasted}"
+    assert store_mod.history()[0]["polished_text"] == "Send it to lucas@example.com.", (
+        "history must record what was actually pasted, not the trigger phrase"
+    )
+
+
 def test_only_the_first_consumer_claims_an_utterance():
     bare = _claimable()
     assert _claim(bare) is True, "first caller takes the recording"
