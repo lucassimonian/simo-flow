@@ -198,6 +198,41 @@ def test_a_late_open_failure_cannot_kill_the_press_that_replaced_it(rec, monkeyp
     )
 
 
+def test_a_dead_microphone_is_reported_differently_from_a_quiet_one(rec):
+    """Bit-exact silence means the device delivered nothing, not that you were quiet.
+
+    Real silence in a real room is never exactly zero — a live input floor always
+    carries noise. Zeros mean a mute switch, a revoked permission, or (once this
+    is a signed app) a missing audio-input entitlement, where CoreAudio raises no
+    error and simply hands over zeroed buffers. All three are fixable by the user
+    and none is guessable from "no speech detected".
+    """
+    rec.begin()
+    frames = int(audio.RATE * 1.0)
+    rec._cb(np.zeros((frames, 1), dtype=np.float32), frames, None, None)
+
+    assert rec.end() is None
+    assert "microphone" in rec.reject_reason.lower(), (
+        f"a dead mic was reported as {rec.reject_reason!r} — indistinguishable from "
+        f"the user simply not speaking"
+    )
+    assert rec._needs_reinit is True, "the next press should start from a fresh device list"
+
+
+def test_genuinely_quiet_speech_is_still_reported_as_quiet(rec):
+    """The counterpart: a real but very quiet room must NOT be blamed on the device.
+    Otherwise the new message becomes the boy who cried wolf."""
+    rec.begin()
+    frames = int(audio.RATE * 1.0)
+    faint = np.full((frames, 1), 1e-5, dtype=np.float32)  # audible floor, far below speech
+    rec._cb(faint, frames, None, None)
+
+    assert rec.end() is None
+    assert "speech" in rec.reject_reason.lower(), (
+        f"quiet speech was blamed on the microphone: {rec.reject_reason!r}"
+    )
+
+
 def test_a_slow_open_from_a_previous_press_does_not_hijack_the_current_one(rec, monkeypatch):
     """A stale open that finally *succeeds* must not publish its stream.
 

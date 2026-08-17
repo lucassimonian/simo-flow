@@ -85,6 +85,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     # ---- audio: capture and device handling -------------------------------
     (
+        "audio/dead-mic-named-not-blamed-on-the-user",
+        "engine/audio.py",
+        "        if not np.any(samples):",
+        "        if False:",
+    ),
+    (
         "audio/silence-guard",
         "engine/audio.py",
         "        if float(np.sqrt(np.mean(trimmed**2))) < SILENCE_RMS:",

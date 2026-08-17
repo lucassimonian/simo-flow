@@ -174,13 +174,20 @@ def test_mic_that_cannot_open_at_all_says_so_plainly(monkeypatch):
 
 
 def test_silence_guard_rejects_dead_mic_buffer():
+    """A bit-exact-zero buffer is now named for what it is: a dead microphone.
+
+    This test always fed pure zeros — the dead-mic case its own name describes —
+    but asserted the generic "no speech detected" wording, which reads as "you
+    didn't say anything" and sends the user looking in the wrong place. Zeros can
+    only mean the device delivered nothing, so it says so.
+    """
     from engine.audio import Recorder, RATE
 
     r = Recorder()
     r._chunks = [np.zeros(512, dtype=np.float32) for _ in range(int(RATE / 512))]
     r._recording = True
     assert r.end() is None
-    assert "no speech" in r.reject_reason
+    assert "microphone" in r.reject_reason.lower(), r.reject_reason
     assert r._needs_reinit is True  # silence flags a device refresh
 
 
