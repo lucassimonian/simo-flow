@@ -83,7 +83,63 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        if not _wait_until(lambda: _same_app(_capture_focus(), focus), ACTIVATE_DELAY):",
         "        if False:",
     ),
+    (
+        "main/hold-is-timed-at-the-key-not-after-the-hop",
+        "engine/__main__.py",
+        "        self._on_main(lambda at=time.time(): self._on_press(at))",
+        "        self._on_main(lambda: self._on_press())",
+    ),
+    (
+        "main/release-is-timed-at-the-key-not-after-the-hop",
+        "engine/__main__.py",
+        "        self._on_main(lambda at=time.time(): self._on_release(at))",
+        "        self._on_main(lambda: self._on_release())",
+    ),
+    # ---- hotkey: the tap sits inside the system input pipeline -------------
+    # Everything here is felt by every key in every app, so each guard is one the
+    # user notices immediately: a swallowed keystroke, a duplicated dictation, or
+    # an fn key that is simply dead until the app restarts.
+    (
+        "hotkey/fn-event-is-consumed",
+        "engine/hotkey.py",
+        "                return None  # CONSUME: system never sees the fn press",
+        "                return event",
+    ),
+    (
+        "hotkey/other-events-pass-through",
+        "engine/hotkey.py",
+        "                (self.on_press if fn_now else self.on_release)()\n"
+        "                return None  # CONSUME: system never sees the fn press\n"
+        "        return event",
+        "                (self.on_press if fn_now else self.on_release)()\n"
+        "                return None  # CONSUME: system never sees the fn press\n"
+        "        return None",
+    ),
+    (
+        "hotkey/fn-detected-by-mask-not-equality",
+        "engine/hotkey.py",
+        "            fn_now = bool(CGEventGetFlags(event) & FN_FLAG)",
+        "            fn_now = CGEventGetFlags(event) == FN_FLAG",
+    ),
+    (
+        "hotkey/disabled-tap-is-re-enabled",
+        "engine/hotkey.py",
+        "            CGEventTapEnable(self._tap, True)\n            return event",
+        "            return event",
+    ),
+    (
+        "hotkey/stuck-fn-is-released-when-the-tap-dies",
+        "engine/hotkey.py",
+        "            if self._down:\n                self._down = False\n                self.on_release()",
+        "            if False:\n                self._down = False\n                self.on_release()",
+    ),
     # ---- audio: capture and device handling -------------------------------
+    (
+        "audio/dead-mic-named-not-blamed-on-the-user",
+        "engine/audio.py",
+        "        if not np.any(samples):",
+        "        if False:",
+    ),
     (
         "audio/silence-guard",
         "engine/audio.py",

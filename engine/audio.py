@@ -302,6 +302,26 @@ class Recorder:
             )
             return None
         samples = np.concatenate(chunks)
+        # Exactly zero is not quiet — it is a microphone that opened, reported
+        # success, and delivered nothing. Real silence in a real room is never
+        # bit-exact zero: a live input floor always carries some noise.
+        #
+        # Worth separating because the causes are ones the user can fix and would
+        # never guess from "no speech detected": a hardware mute switch, a
+        # revoked microphone permission, or — once this ships as a signed app —
+        # a missing audio-input entitlement, where CoreAudio raises no error at
+        # all and simply hands over zeroed buffers on schedule. A comparable app
+        # reports every one of those as "no speech detected", which reads as
+        # "you didn't say anything" and sends people looking in the wrong place.
+        if not np.any(samples):
+            self._needs_reinit = True
+            print(
+                f"[simo] captured {len(samples) / RATE:.1f}s of bit-exact silence — the "
+                "microphone opened but delivered no signal (muted, or permission revoked)",
+                flush=True,
+            )
+            self.reject_reason = "microphone delivered silence — check it isn't muted"
+            return None
         if len(samples) < MIN_UTTERANCE_SEC * RATE:
             self.reject_reason = "too short"
             return None

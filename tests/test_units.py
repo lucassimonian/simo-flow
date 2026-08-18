@@ -7,6 +7,7 @@ tests/test_pipeline.py and the per-module __main__ self-checks.
 Run:  ./.venv/bin/python -m pytest tests/test_units.py -q
 """
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -174,13 +175,20 @@ def test_mic_that_cannot_open_at_all_says_so_plainly(monkeypatch):
 
 
 def test_silence_guard_rejects_dead_mic_buffer():
+    """A bit-exact-zero buffer is now named for what it is: a dead microphone.
+
+    This test always fed pure zeros — the dead-mic case its own name describes —
+    but asserted the generic "no speech detected" wording, which reads as "you
+    didn't say anything" and sends the user looking in the wrong place. Zeros can
+    only mean the device delivered nothing, so it says so.
+    """
     from engine.audio import Recorder, RATE
 
     r = Recorder()
     r._chunks = [np.zeros(512, dtype=np.float32) for _ in range(int(RATE / 512))]
     r._recording = True
     assert r.end() is None
-    assert "no speech" in r.reject_reason
+    assert "microphone" in r.reject_reason.lower(), r.reject_reason
     assert r._needs_reinit is True  # silence flags a device refresh
 
 
@@ -610,6 +618,56 @@ def test_a_failed_paste_still_records_the_dictation(monkeypatch, tmp_path):
     assert len(rows) == 1, "the transcription must survive a refused paste"
     assert rows[0]["polished_text"] == "the paste is going to fail"
     assert flashes and "saved" in flashes[0].lower(), f"and say where it went: {flashes}"
+
+
+def test_a_hold_is_timed_from_the_key_not_from_the_interface_catching_up():
+    """Moving the tap off the main runloop must not change what a hold means.
+
+    The tap now runs on its own thread and hands the state machine to the main
+    thread, where the UI lives. If the timestamps were taken after that hop, a
+    busy interface would compress the measured hold: press delayed by 200ms and
+    release delivered on time turns a deliberate 0.4s push-to-talk into something
+    under HOLD_SEC, which is discarded as a stray tap. The user speaks a sentence
+    and gets nothing.
+
+    So both stamps are taken on the hotkey thread. This drives the two callbacks
+    with a deliberately late main thread and checks the measured hold survives.
+    """
+    m = _mainmod()
+
+    dispatched: list = []
+
+    class Bare:
+        _on_main = staticmethod(dispatched.append)
+        _tap_press = m.SimoFlow._tap_press
+        _tap_release = m.SimoFlow._tap_release
+
+        def __init__(self):
+            self.stamps: list[tuple[str, float]] = []
+
+        def _on_press(self, at=None):
+            self.stamps.append(("press", at))
+
+        def _on_release(self, at=None):
+            self.stamps.append(("release", at))
+
+    bare = Bare()
+    bare._tap_press()
+    time.sleep(m.HOLD_SEC + 0.08)  # a real, deliberate hold
+    bare._tap_release()
+
+    assert bare.stamps == [], "the tap thread must not run the state machine itself"
+
+    time.sleep(0.15)  # the interface is busy and only now gets round to it
+    for fn in dispatched:
+        fn()
+
+    assert [kind for kind, _ in bare.stamps] == ["press", "release"], "order must survive"
+    held = bare.stamps[1][1] - bare.stamps[0][1]
+    assert held >= m.HOLD_SEC, (
+        f"hold measured as {held:.3f}s against a {m.HOLD_SEC}s threshold — timing it after "
+        f"the hop would discard a real push-to-talk as a stray tap"
+    )
 
 
 def test_snippets_are_expanded_during_a_real_dictation(tmp_path, monkeypatch):
