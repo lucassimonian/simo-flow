@@ -22,6 +22,7 @@ two seconds while a device switches — costs at most one dictation.
 """
 import queue
 import threading
+import weakref
 
 import numpy as np
 import sounddevice as sd
@@ -92,6 +93,64 @@ def default_input_device() -> int | None:
         return None
 
 
+# PortAudio's initialise/terminate are process-global, not per-stream: sd._terminate()
+# tears down the whole library for everyone. Opening a stream on one thread while
+# another is mid-teardown is undefined behaviour, and it shows up exactly as it
+# should — a segmentation fault inside C with no Python frame to blame. Every call
+# into PortAudio therefore goes through this one lock.
+#
+# Uncontended in the running app, which has a single Recorder. It matters wherever
+# more than one exists at a time, which today is the test suite and tomorrow is
+# whatever else decides it needs a second one.
+_PORTAUDIO_LOCK = threading.Lock()
+
+# How often an idle worker wakes to ask whether its Recorder still exists. Only
+# ever paid while nothing is happening, and there is exactly one Recorder in the
+# running app, so this is a test-suite hygiene cost rather than a runtime one.
+_WORKER_IDLE_POLL_SEC = 1.0
+
+# Every live Recorder, weakly held so it costs nothing and keeps nothing alive.
+# Exists so callers can wait for all in-flight device work to finish — which the
+# test suite must do before its fakes are removed, or a queued operation lands on
+# the real PortAudio after its test has ended and tears the library down while
+# another test is opening a stream. That is a segmentation fault inside CoreAudio's
+# real-time thread, roughly one run in seven, with every test reported as passing.
+_LIVE_RECORDERS: "weakref.WeakSet[Recorder]" = weakref.WeakSet()
+
+
+def drain_all() -> bool:
+    """Wait for every live Recorder to finish its queued device work."""
+    return all(r._drain_audio_ops(timeout=5.0) for r in list(_LIVE_RECORDERS))
+
+
+def _audio_worker(recorder_ref: "weakref.ref[Recorder]", work: queue.Queue) -> None:
+    """Run queued device operations, one at a time, in the order requested.
+
+    One thread rather than a pool, because ordering is correctness here: an open
+    that overtook the close following it would leave the microphone live with the
+    macOS indicator lit — the exact "always listening" impression the on-demand
+    design exists to avoid.
+
+    A module function taking a weak reference, deliberately, rather than a method:
+    a thread targeting a bound method holds its object alive for ever, so every
+    Recorder ever built would keep both itself and a thread around. It exits when
+    its Recorder has been collected and there is no queued work left to do.
+    """
+    while True:
+        try:
+            op = work.get(timeout=_WORKER_IDLE_POLL_SEC)
+        except queue.Empty:
+            if recorder_ref() is None:
+                return  # nobody owns us any more, and nothing is queued
+            continue
+        try:
+            op()
+        except Exception as e:
+            # Never let one bad operation kill this thread: it would leave the app
+            # unable to record for the rest of the session, silently.
+            print(f"[simo] audio operation failed: {type(e).__name__}: {e}", flush=True)
+
+
 class Recorder:
     def __init__(self) -> None:
         self._chunks: list[np.ndarray] = []
@@ -112,25 +171,20 @@ class Recorder:
         # Every device call is queued here and executed by one dedicated thread,
         # so no caller ever waits on CoreAudio. See _audio_worker.
         self._audio_q: queue.Queue = queue.Queue()
-        threading.Thread(target=self._audio_worker, daemon=True, name="simo-audio").start()
-
-    # ---- the audio thread ------------------------------------------------
-    def _audio_worker(self) -> None:
-        """Run queued device operations, one at a time, in the order requested.
-
-        One thread rather than a pool, because ordering is correctness here: an
-        open that overtook the close following it would leave the microphone live
-        with the macOS indicator lit — the exact "always listening" impression
-        the on-demand design exists to avoid.
-        """
-        while True:
-            op = self._audio_q.get()
-            try:
-                op()
-            except Exception as e:
-                # Never let one bad operation kill this thread: it would leave the
-                # app unable to record for the rest of the session, silently.
-                print(f"[simo] audio operation failed: {type(e).__name__}: {e}", flush=True)
+        # The worker is given a *weak* reference, so it never keeps its Recorder
+        # alive and exits once nothing else holds one. A bound method here would
+        # make every Recorder immortal: the app has one, but the test suite builds
+        # dozens, and each was leaving behind a thread parked on the queue for the
+        # life of the process. Thirty abandoned threads being torn down at
+        # interpreter exit is how a green suite still manages to die on the way
+        # out — which it did, on one CI runner, with every test passing.
+        threading.Thread(
+            target=_audio_worker,
+            args=(weakref.ref(self), self._audio_q),
+            daemon=True,
+            name="simo-audio",
+        ).start()
+        _LIVE_RECORDERS.add(self)
 
     def _drain_audio_ops(self, timeout: float = 5.0) -> bool:
         """Wait for queued device work to finish. False if it didn't in time.
@@ -250,23 +304,36 @@ class Recorder:
             self._open_failed = True
             self._recording = False
 
-    @staticmethod
-    def _reinit_portaudio() -> None:
-        """Drop and rebuild PortAudio's device list. Best-effort by design: if this
-        fails there is nothing better to try, and it must not stop a dictation."""
+    def _reinit_portaudio(self) -> None:
+        """Drop and rebuild PortAudio's device list.
+
+        Closes our stream first, always. `sd._terminate()` frees the whole library,
+        including any stream still open — and CoreAudio's real-time thread may be
+        inside the capture callback at that exact moment. It then reads memory that
+        no longer exists, and the process dies with a segmentation fault in
+        `com.apple.audio.IOThread.client`, which is a crash report that says nothing
+        about the line that caused it. Observed for real: three crashes in ninety
+        seconds, each restarted by launchd into another one.
+
+        Best-effort otherwise by design: if the rebuild fails there is nothing
+        better to try, and it must not stop a dictation.
+        """
+        self._close_stream()  # never tear down the library under a live callback
         try:
-            sd._terminate()
-            sd._initialize()
+            with _PORTAUDIO_LOCK:
+                sd._terminate()
+                sd._initialize()
         except Exception as e:
             print(f"[simo] PortAudio re-init failed: {e}", flush=True)
 
     def _open_stream(self) -> bool:
         """Open and start the mic stream. False if the device refused."""
         try:
-            self._stream = sd.InputStream(
-                samplerate=RATE, channels=1, dtype="float32", blocksize=512, callback=self._cb
-            )
-            self._stream.start()
+            with _PORTAUDIO_LOCK:
+                self._stream = sd.InputStream(
+                    samplerate=RATE, channels=1, dtype="float32", blocksize=512, callback=self._cb
+                )
+                self._stream.start()
             return True
         except Exception as e:
             print(f"[simo] mic open failed: {e}", flush=True)
@@ -276,8 +343,11 @@ class Recorder:
     def _close_stream(self) -> None:
         if self._stream is not None:
             try:
-                self._stream.stop()
-                self._stream.close()
+                # stop() waits for the callback to return before close() frees it;
+                # closing while CoreAudio is mid-callback is a use-after-free.
+                with _PORTAUDIO_LOCK:
+                    self._stream.stop()
+                    self._stream.close()
             except Exception:
                 pass  # already gone
             self._stream = None
