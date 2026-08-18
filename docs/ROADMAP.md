@@ -94,6 +94,59 @@ to Simo Flow are:
 
 ---
 
+## The moat, established by evidence rather than opinion
+
+Two Swift-native competitors were read at source. Both independently concluded
+that letting a language model rewrite your words is not worth it.
+
+**Pindrop built an anti-rewrite guard, could not make it safe, and deleted the
+feature.** From `StreamingRefinementCoordinator.swift`:
+
+> Every bug we shipped fixes for in that pipeline (duplication, "correct ly"
+> truncation, race conditions) was downstream of a single invariant violation:
+> the LLM could rewrite text the user had already seen typed.
+
+Their guard survives in the repository with **zero production callers**, kept
+alive only so its tests compile. The live path strips `"Here is the cleaned
+transcript:"` from the front of the model's reply and trusts the rest. Their
+deterministic filler list is five words — `um, uh, erm, hmm, hm` — with "you
+know" and "like" deliberately excluded as too risky.
+
+**Overwhisper never shipped an LLM at all.** Cleanup is regex.
+
+Simo Flow already has, working and mutation-tested, the guard Pindrop abandoned:
+every cleanup must be an ordered subsequence of what was said, no negation may be
+dropped, and enough content must survive. **That is the differentiator.** "Local"
+is not — Pindrop, Overwhisper, MacWhisper, Superwhisper and several others are
+all local. Nobody else refuses to reword you.
+
+## Packaging is solved, and it costs nothing
+
+`jayozer/jispr_flow` ships a signed, notarised `.app` **without rewriting its
+Python**. One staging script copies the venv's interpreter into
+`App.app/Contents/Resources/engine/python`; a nine-line shim sets `PYTHONHOME`
+and `PYTHONDONTWRITEBYTECODE=1`. No PyInstaller, no rewrite.
+
+**The trap that costs a weekend if missed.** Their entitlements file:
+
+> Without this entitlement a Hardened Runtime process is not refused access; Core
+> Audio silently delivers all-zero sample buffers, and every dictation ends in
+> "no speech detected".
+
+Two entitlements files are required — the outer app *and* the embedded Python
+binary both need `com.apple.security.device.audio-input`, because the app is the
+TCC "responsible process" for what it spawns. They carry a regression test for
+this dated 2026-07-12, so it reached production.
+
+**Three places to be better than them:**
+
+1. They never verify the entitlement landed in the *signature* — only that the
+   build script mentions it. One `codesign -d --entitlements - … | grep` fixes it.
+2. Their ad-hoc build path omits `--options runtime`, so local builds cannot
+   reproduce the production failure.
+3. An all-zero buffer still reports "no speech detected". **Done in v2.2.5** — a
+   bit-exact-zero capture now names the microphone instead of blaming the user.
+
 ## What Wispr Flow actually ships
 
 Read out of the shipped bundle, not from marketing. This is the list to take from
@@ -132,6 +185,31 @@ entry point returns in under 250ms.
 ⬜ **confirmed against real AirPods** — the one remaining step.
 
 ---
+
+## Still behind, in priority order
+
+Read out of competitors' source, not guessed:
+
+1. **No silence gate before transcription.** Overwhisper refuses to transcribe
+   below −38 dB *mean* RMS, and says why: *"a single mic transient can push peak
+   above any threshold even when the bulk of the recording is silence."* Silence
+   is where whisper invents sentences. A dozen lines, kills a class of bug.
+2. **No fallback when the event tap cannot be created.** The tap is re-enabled
+   after macOS disables it, but a tap that never attaches leaves the fn key dead.
+   Pindrop falls back to an `NSEvent` global monitor.
+3. **Not signed or notarised.** Overwhisper's `release-dmg.yml` is a working
+   template if the £99 is ever paid.
+4. **A weak default is worth avoiding, and we already avoid it** — Pindrop
+   defaults to `openai_whisper-base`; Simo Flow defaults to large-v3-turbo.
+5. **Apple Speech as a zero-download option.** Pindrop lists it as recommended:
+   no first-run model download at all. We have no such escape hatch.
+
+**Model candidates, to be decided by measurement not leaderboard.** Parakeet TDT
+0.6B v3 posts ~6.3% WER against whisper large-v3's ~7.4%, is faster on Apple
+Silicon, and reportedly does not hallucinate during pauses — which would delete
+the class of bug `SILENCE_RMS`, `dedupe_sentences` and `trim_silence` all exist to
+patch. Benchmark every candidate against the real dictation history before
+swapping anything.
 
 ## Session 2 — The hotkey never dies silently
 

@@ -95,14 +95,31 @@ class SimoFlow(rumps.App):
     def _ui_status(self, text: str) -> None:
         self._on_main(lambda: setattr(self.status_item, "title", text))
 
+    def _stage(self, menu_text: str, log_text: str) -> None:
+        """Say what startup is doing, in the menu and in the log.
+
+        Booting takes tens of seconds — a speech model and a language model both
+        have to load — and it used to say nothing at all, in either place. A
+        silent app that has not finished starting is indistinguishable from a
+        broken one, which cost a real debugging session: the fn key did nothing,
+        and there was no way to tell whether it had failed, or simply had not got
+        there yet.
+        """
+        self.status_item.title = menu_text
+        print(f"[simo] {log_text} (+{time.time() - self._boot_t0:.1f}s)", flush=True)
+
     def boot(self) -> None:
+        self._boot_t0 = time.time()
+        self._stage("Starting speech model…", "loading whisper")
         stt.start_server(self.tier)
         # mic stream is opened on demand in the recorder (keeps the macOS mic
         # indicator off when idle); nothing to start here.
+        self._stage("Starting cleanup model…", "warming the language model")
         polish.polish("warm up")  # pull the LLM into memory
 
         from engine import api
 
+        self._stage("Starting dashboard…", "starting the dashboard on 127.0.0.1:7331")
         api.start_in_background()  # dashboard at http://127.0.0.1:7331
 
         from engine.hotkey import HotkeyListener
@@ -113,6 +130,7 @@ class SimoFlow(rumps.App):
         # The tap gets its own thread. See HotkeyListener.serve: a busy main
         # runloop can otherwise get it disabled by macOS, and while it is off the
         # fn key does nothing with no indication why.
+        self._stage("Listening for the fn key…", "attaching the fn-key tap")
         threading.Thread(target=self._serve_hotkey, daemon=True, name="simo-hotkey").start()
 
         # single serialized pipeline worker
@@ -140,6 +158,7 @@ class SimoFlow(rumps.App):
                 print("[simo] fn listener needs permissions — retrying every 3s", flush=True)
                 time.sleep(3.0)
                 continue
+            print("[simo] fn-key tap attached — hold fn to dictate", flush=True)
             self._on_main(self._hotkey_ready)
             self.listener.serve()  # blocks here until quit
             return
@@ -628,8 +647,16 @@ def _install_shutdown_hooks() -> None:
 
 
 def main() -> None:
-    _tee_logs()
+    # Singleton check BEFORE the log tee, deliberately. _tee_logs() replaces
+    # stderr, so the "already running" message was being written into a log file
+    # nobody thinks to open — and a second copy would appear to start and then do
+    # nothing at all. Two copies each install a *consuming* fn tap, so the first
+    # swallows every press and the second never sees one: the symptom is a dead
+    # fn key with no explanation anywhere the user is looking. Failing before the
+    # tee puts the message on the terminal, and under launchd stderr still reaches
+    # the boot log, so nothing is lost.
     _lock = _acquire_singleton()
+    _tee_logs()
     _install_shutdown_hooks()
     app = SimoFlow()
     # boot after the runloop starts so the event tap attaches to the right loop
