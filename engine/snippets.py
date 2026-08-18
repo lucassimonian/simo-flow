@@ -1,7 +1,13 @@
 """Snippets: say a phrase you chose, get the text you saved.
 
-"my email address" becomes lucassimonian@me.com. "my LinkedIn" becomes the URL.
+"my email address" becomes your address. "my LinkedIn" becomes your profile URL.
 The things you retype constantly and always get slightly wrong out loud.
+
+Every snippet lives in ~/.simo-flow.db, which is outside this repository and
+ignored by git. Nobody who clones this project gets anybody's snippets, and no
+example here uses a real address — a documentation placeholder that happens to be
+someone's actual contact details is how personal data ends up in a public repo
+and stays there.
 
 Deliberately applied *after* the polish pass, never inside it. `polish` guarantees
 its output is your own words with fillers removed — an ordered subsequence of what
