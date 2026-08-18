@@ -17,7 +17,7 @@ from engine import snippets  # noqa: E402
 MAP = {
     "my email address": "lucas@example.com",
     "my email": "wrong@example.com",
-    "my linkedin": "https://linkedin.com/in/lucas",
+    "my linkedin": "https://linkedin.com/in/example",
 }
 
 
