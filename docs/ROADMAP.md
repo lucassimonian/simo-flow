@@ -20,6 +20,28 @@ is the difference between five users and thousands.
 
 ---
 
+## Status board
+
+The sections further down were written before the work happened. This is what is
+actually true, and it supersedes the numbering below.
+
+| | Subject | State |
+|---|---|---|
+| ✅ | **The freeze** | Fixed at the root, proven on real AirPods, shipped as v2.2.4 |
+| ✅ | **The whole backlog** | All six issues closed — four fixed, two declined with reasons |
+| ✅ | **Snippets** | Say a phrase, get your text. The best feature Wispr has |
+| ✅ | **The Apple look** | Real Liquid Glass and a proper type ramp, verified in both themes |
+| ✅ | **A crash nobody had noticed** | PortAudio torn down under a live callback — segfaulted the app, present since v2.2.0 |
+| ✅ | **Startup is legible** | Every stage reported; a second copy now says so where you can see it |
+| ◐ | **The hotkey never dies silently** | Tap is on its own thread and covered by tests. **Left: Secure Input detection, and a fallback when the tap cannot be created** |
+| ◐ | **Privacy at rest** | Repo swept clean, backups are consistent and owner-only. **Left: a retention policy — history is kept forever** |
+| ⬜ | **Speed** | Benchmark Parakeet v3 and Qwen3 against the real history before swapping anything |
+| ⬜ | **Kill the Ollama requirement** | The single biggest install barrier |
+| ⬜ | **Ship a real `.app`** | Recipe known and free; only notarisation costs money |
+
+**Next session, one subject: speed.** It is the thing felt on every single dictation,
+and the measurement has to come before any model change.
+
 ## Where we actually are
 
 | | |
