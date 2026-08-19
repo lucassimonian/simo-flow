@@ -258,6 +258,18 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     # ---- polish: the dictation-integrity guard ----------------------------
     (
+        "polish/verified-per-sentence-not-per-dictation",
+        "engine/polish.py",
+        "    segments = _SENTENCE_END.split(raw_text)\n    if len(segments) > 1:",
+        "    segments = [raw_text]\n    if False:",
+    ),
+    (
+        "polish/clean-sentences-skip-the-model",
+        "engine/polish.py",
+        "            _polish_segment(seg, style_addendum, timeout) if needs_cleanup(seg) else seg",
+        "            _polish_segment(seg, style_addendum, timeout)",
+    ),
+    (
         "polish/subsequence-check",
         "engine/polish.py",
         "    if not _is_subsequence(out_w, raw_w):",
@@ -278,8 +290,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "polish/skip-when-nothing-to-clean",
         "engine/polish.py",
-        "    if not needs_cleanup(raw_text):",
-        "    if False:",
+        "    return _polish_segment(raw_text, style_addendum, timeout) "
+        "if needs_cleanup(raw_text) else raw_text",
+        "    return _polish_segment(raw_text, style_addendum, timeout)",
     ),
     (
         "polish/legitimate-doubles-not-stutters",

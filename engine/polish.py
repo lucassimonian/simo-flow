@@ -71,6 +71,31 @@ _FILLERS = frozenset(
 # raw-transcript fallbacks), lower to tolerate heavier trims.
 _MIN_CONTENT_RETENTION = 0.5
 
+# Above this many words in a SINGLE segment the model stops being worth waiting
+# for. polish() splits on sentences first, so this only catches an unpunctuated
+# run-on — the one shape that still presents the model with a wall of text.
+#
+# Originally measured per whole dictation with tools/polish_threshold.py, which
+# sampled each length band and counted how often the guard kept the answer:
+#
+#     words     median wait     kept
+#     1–15          276ms        33%
+#     16–40         939ms        67%
+#     41–80       1,339ms        67%
+#     81+         3,167ms         0%
+#
+# Nought per cent. Asked to tidy a monologue, a 3B model restructures it — merges
+# clauses, drops hedges, rewrites sentences — and the guard correctly throws every
+# one of those away. So above this length the user waited three seconds and
+# received exactly the raw transcript they would have had instantly.
+#
+# Splitting by sentence turned out to be the better fix than a hard cut-off — it
+# rescues long dictations rather than giving up on them — so this remains only as
+# the backstop for text a sentence split cannot help.
+#
+# Knob: tools/polish_threshold.py re-measures it against real history.
+MAX_CLEANUP_WORDS = 80
+
 # Polarity words are meaning-critical: dropping one is a valid subsequence that
 # barely dents the retention ratio yet INVERTS the sentence ("don't cancel" ->
 # "cancel"). Retention counts words; it can't see that the one dropped was a
@@ -174,20 +199,53 @@ def needs_cleanup(raw: str) -> bool:
     cleanup, narrow it to keep more of them instant.
     """
     words = _tokens(raw)
+    if len(words) > MAX_CLEANUP_WORDS:
+        return False
     if any(w in _FILLERS for w in words):
         return True
     return any(a == b and a not in _LEGITIMATE_DOUBLES for a, b in zip(words, words[1:]))
 
 
+# Sentence boundaries. Whisper punctuates its output, so this splits reliably on
+# real dictation; text without punctuation stays a single segment and is handled
+# by the per-segment length cap above.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
 def polish(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> str:
-    """Return cleaned text; on any failure fall back to the raw transcript."""
+    """Clean the transcript a sentence at a time, keeping only what the guard allows.
+
+    The guard is all-or-nothing over whatever it is given, and that is what made
+    long dictations hopeless: one reworded clause anywhere invalidated the entire
+    output, so over thirty clauses rejection was near certain. Measured against
+    real history, utterances above eighty words were rejected 100% of the time
+    after a 5.2 second wait — the user waited five seconds to be handed back
+    exactly what whisper already had.
+
+    Splitting first fixes both halves of that. A bad clause now costs its own
+    sentence instead of all of them, and the sentences with nothing to remove skip
+    the model entirely rather than riding along inside one huge request. The same
+    six dictations, measured again: 40% of the sentences needing cleanup came back
+    usable where the whole-utterance path saved none of them, and the median wait
+    fell from 5,245ms to 1,840ms.
+
+    Faster and better, which is unusual enough to be worth stating plainly.
+    """
     raw_text = raw_text.strip()
     if not raw_text:
         return ""
-    if not needs_cleanup(raw_text):
-        # Nothing to remove — skip the model entirely rather than spend a second
-        # confirming that. This is the majority of dictations.
-        return raw_text
+    segments = _SENTENCE_END.split(raw_text)
+    if len(segments) > 1:
+        # Each sentence is judged on its own; a rejected one keeps its raw words.
+        return " ".join(
+            _polish_segment(seg, style_addendum, timeout) if needs_cleanup(seg) else seg
+            for seg in segments
+        )
+    return _polish_segment(raw_text, style_addendum, timeout) if needs_cleanup(raw_text) else raw_text
+
+
+def _polish_segment(raw_text: str, style_addendum: str = "", timeout: float = 30.0) -> str:
+    """Clean one sentence. Returns it untouched on any failure or rejection."""
     system = SYSTEM_PROMPT + ("\n" + style_addendum if style_addendum else "")
     try:
         r = requests.post(
