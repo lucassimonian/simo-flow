@@ -290,8 +290,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "polish/skip-when-nothing-to-clean",
         "engine/polish.py",
-        "    if not needs_cleanup(raw_text):",
-        "    if False:",
+        "    return _polish_segment(raw_text, style_addendum, timeout) "
+        "if needs_cleanup(raw_text) else raw_text",
+        "    return _polish_segment(raw_text, style_addendum, timeout)",
     ),
     (
         "polish/legitimate-doubles-not-stutters",
