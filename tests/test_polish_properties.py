@@ -25,6 +25,7 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from engine import polish  # noqa: E402
 from engine.polish import _FILLERS, _NEGATORS, _is_rewrite  # noqa: E402
 
 # Content words: real words the cleanup must preserve. Excludes fillers (which
@@ -152,3 +153,72 @@ def test_guard_is_deterministic(words):
     dictation non-reproducible and impossible to debug."""
     raw, out = " ".join(words), " ".join(words[:-1]) if len(words) > 1 else " ".join(words)
     assert _is_rewrite(raw, out) == _is_rewrite(raw, out)
+
+
+# --------------------------------------------------------------------------
+# The length threshold — measured, not guessed. See MAX_CLEANUP_WORDS.
+# --------------------------------------------------------------------------
+def test_a_monologue_skips_the_cleanup_model_entirely():
+    """Above the measured threshold the model has never once survived the guard.
+
+    tools/polish_threshold.py sampled real dictation history by length: in the
+    81-words-and-up band the integrity guard rejected the model's answer 100% of
+    the time, at a median 3,167ms each. The user waited three seconds and was
+    handed back exactly the raw transcript. Skipping is not a compromise there —
+    it is the same output, instantly.
+    """
+    monologue = ("um " + "word " * (polish.MAX_CLEANUP_WORDS + 10)).strip()
+    assert polish.needs_cleanup(monologue) is False, (
+        "a long utterance must skip the model — its output is always rejected"
+    )
+
+
+def test_a_normal_sentence_still_gets_cleaned():
+    """The 16–80 band is where cleanup earns its latency: two answers in three
+    survive the guard. Cutting it would trade a working feature for nothing."""
+    normal = "um so I think we should meet at three to discuss the report"
+    assert polish.needs_cleanup(normal) is True
+
+
+def test_the_threshold_sits_above_everyday_dictation():
+    """A guard against tuning this down until it silently disables cleanup. 80
+    words is several sentences — well beyond a normal message."""
+    assert polish.MAX_CLEANUP_WORDS >= 60
+
+
+def test_one_bad_sentence_does_not_cost_the_others(monkeypatch):
+    """The guard is all-or-nothing over whatever it is given.
+
+    Given a whole dictation, one reworded clause invalidated every other clause
+    with it — which is why utterances above eighty words were rejected 100% of the
+    time. Splitting first means a bad sentence costs only itself.
+    """
+    def fake_segment(text, *_a, **_kw):
+        # Stands in for the model: cleans the first sentence, is rejected on the
+        # second (a rejection returns the input untouched).
+        return "cleaned." if text.startswith("um one") else text
+
+    monkeypatch.setattr(polish, "_polish_segment", fake_segment)
+    out = polish.polish("um one here. um two here.")
+
+    assert out.startswith("cleaned."), "a good sentence must keep its cleanup"
+    assert "um two here." in out, "a rejected sentence must keep the user's raw words"
+
+
+def test_a_sentence_with_nothing_to_remove_never_reaches_the_model(monkeypatch):
+    """Half the latency saving comes from here: in a long dictation most sentences
+    contain no filler at all, and used to ride along inside one huge request."""
+    seen = []
+    monkeypatch.setattr(polish, "_polish_segment", lambda t, *a, **k: seen.append(t) or t)
+
+    polish.polish("um one here. A clean sentence. uh two here.")
+
+    assert len(seen) == 2, f"only the sentences needing cleanup should be sent: {seen}"
+    assert all("clean sentence" not in s for s in seen)
+
+
+def test_splitting_never_loses_words():
+    """Reassembly must be lossless. A split that drops or duplicates text would be
+    invisible in normal use and catastrophic in a long dictation."""
+    text = "First one here. Second one there! Third one? Fourth."
+    assert polish.polish(text) == text, "text needing no cleanup must survive the split"
