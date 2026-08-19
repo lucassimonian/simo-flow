@@ -460,16 +460,29 @@ class SimoFlow(rumps.App):
             self._ui_title(IDLE_TITLE)
 
 
-def _acquire_singleton() -> object:
-    """One engine max — stacked instances each paste, tripling output."""
+LOCK_PATH = "~/.simo-flow.lock"
+
+
+def _acquire_singleton(path: str = LOCK_PATH) -> object:
+    """One engine max, or every dictation is pasted twice.
+
+    Two copies each install a *consuming* fn tap, so the first swallows every
+    press and the second never sees one: the symptom is a dead fn key with no
+    explanation anywhere the user is looking. An hour was lost to exactly that
+    (lessons.md 018), which is why this now takes a path — a guard nobody can
+    test is a guard nobody should trust.
+
+    An flock, not a pid file: the kernel releases it when the process dies, so
+    a crash cannot leave a lock behind that blocks every future start.
+    """
     import fcntl
     import os
 
-    lock = open(os.path.expanduser("~/.simo-flow.lock"), "w")
+    lock = open(os.path.expanduser(path), "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        raise SystemExit("Simo Flow is already running (found ~/.simo-flow.lock held).")
+        raise SystemExit(f"Simo Flow is already running (found {path} held).")
     return lock  # keep a reference so the fd stays open
 
 

@@ -47,8 +47,20 @@ Two layers:
 ./.venv/bin/python tests/test_pipeline.py
 ```
 
-Please add or update unit tests for any logic change. CI runs the compile check
-and `tests/test_units.py` on every push.
+Please add or update unit tests for any logic change. Every push runs, on two
+macOS versions: a byte-compile of every module, `ruff` for bug-class rules, the
+full hermetic suite, a secret scan over the whole git history, and `pip-audit`
+against the advisory database.
+
+It then runs `tools/mutation_sweep.py`, which is the gate that matters. A passing
+suite does not mean the guards are tested — two bugs once reached a user with
+green tests, and one test actively asserted the broken behaviour. So the sweep
+disables each safety guard in turn and fails the build if the suite stays green.
+A guard nothing screams about is a guard that will ship broken.
+
+If you add a guard, add a mutation for it. If you move code a mutation matches,
+the sweep will tell you it has gone stale — and fail, because a stale mutation
+checks nothing at all.
 
 ## Code map
 
