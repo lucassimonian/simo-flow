@@ -307,6 +307,13 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        pass",
     ),
     # ---- stt: transcript normalisation -----------------------------------
+    # ---- stt: the whisper-server lifecycle --------------------------------
+    (
+        "stt/server-lifecycle-is-serialised",
+        "engine/stt.py",
+        "    with _SERVER_LOCK:\n        _start_server_locked(tier)",
+        "    _start_server_locked(tier)",
+    ),
     (
         "stt/flatten-whisper-line-wrapping",
         "engine/stt.py",

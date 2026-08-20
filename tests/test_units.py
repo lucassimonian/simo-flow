@@ -1171,3 +1171,62 @@ def test_no_dictated_content_reaches_the_page_unescaped():
         if "esc(" not in match
     ]
     assert not unescaped, f"user content interpolated without esc(): {unescaped}"
+
+
+def test_rapid_model_switching_never_orphans_a_server(monkeypatch):
+    """Switching Accurate → Fast → Accurate quickly must not leak a process.
+
+    `_server` and `_current_tier` are process-global and written from at least
+    four threads. Unguarded, three concurrent switches all passed the reuse check,
+    all called stop_server, and all spawned a process: one bound the port, the
+    others were orphaned with nothing holding a handle to them. Nothing ever reaps
+    those, and current_tier() could report a model the server was not running.
+
+    Asserts on the outcome that matters — every process started is either the
+    survivor or was terminated — rather than on the lock, which would pass even
+    if the lock guarded the wrong region.
+    """
+    import threading
+
+    import engine.stt as stt_mod
+
+    spawned = []
+
+    class FakeProc:
+        def __init__(self, *_a, **_kw):
+            self.terminated = False
+            spawned.append(self)
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.terminated = True
+
+    monkeypatch.setattr(stt_mod.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(stt_mod, "_whisper_bin", lambda: "/fake/whisper-server")
+    monkeypatch.setattr(stt_mod, "_kill_port", lambda _p: None)
+    # A server that is only "up" once one has been spawned and not terminated.
+    monkeypatch.setattr(
+        stt_mod, "is_up", lambda: any(not p.terminated for p in spawned)
+    )
+    monkeypatch.setattr(stt_mod, "_server", None)
+    monkeypatch.setattr(stt_mod, "_current_tier", "accurate")
+
+    threads = [
+        threading.Thread(target=stt_mod.start_server, args=(tier,))
+        for tier in ("fast", "accurate", "fast", "accurate")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    alive = [p for p in spawned if not p.terminated]
+    assert len(alive) <= 1, (
+        f"{len(alive)} whisper-servers left running out of {len(spawned)} spawned — "
+        f"the extras are orphans nothing will reap"
+    )
