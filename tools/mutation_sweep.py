@@ -307,6 +307,13 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        pass",
     ),
     # ---- stt: transcript normalisation -----------------------------------
+    # ---- stt: the whisper-server lifecycle --------------------------------
+    (
+        "stt/server-lifecycle-is-serialised",
+        "engine/stt.py",
+        "    with _SERVER_LOCK:\n        _start_server_locked(tier)",
+        "    _start_server_locked(tier)",
+    ),
     (
         "stt/flatten-whisper-line-wrapping",
         "engine/stt.py",
@@ -314,6 +321,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "    return dedupe_sentences(r.json().get(\"text\", \"\").strip())",
     ),
     # ---- api: the security guards ----------------------------------------
+    (
+        "dashboard/dictated-markup-is-escaped",
+        "engine/static/dashboard.html",
+        "<p>${esc(r.polished_text)}</p>",
+        "<p>${r.polished_text}</p>",
+    ),
     (
         "api/origin-guard-fails-closed",
         "engine/api.py",
@@ -496,13 +509,25 @@ def main() -> int:
 
     print(f"\n{len(killed)}/{len(muts)} guards are genuinely tested")
     if unapplied:
-        print(f"\n{len(unapplied)} mutation(s) out of date — update tools/mutation_sweep.py:")
+        # A stale mutation checks nothing at all, so it is exactly as bad as a
+        # surviving one — worse, because "out of date" reads like housekeeping
+        # while "UNTESTED" reads like an alarm.
+        #
+        # This build used to pass on them, and it cost a release: the mutation
+        # keeping dictated transcripts out of a world-readable file stopped
+        # matching when its function moved, was reported as merely out of date,
+        # and nobody looked. When that was found, the mutation was repaired and
+        # this exit code was not — a symptom fix inside the tool whose whole
+        # purpose is catching symptom fixes.
+        print(f"\n{len(unapplied)} mutation(s) out of date — these guards are NOT being")
+        print("checked at all. Update tools/mutation_sweep.py:")
         for label in unapplied:
             print(f"  - {label}")
     if survivors:
         print(f"\n{len(survivors)} UNTESTED guard(s) — a bug here ships silently:")
         for label in survivors:
             print(f"  - {label}")
+    if survivors or unapplied:
         return 1
     print("\nEvery guard, when broken, is caught by a test.")
     return 0

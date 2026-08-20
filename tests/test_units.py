@@ -362,6 +362,86 @@ def test_junk_transcripts_cover_whisper_silence_outputs():
         assert junk.strip().lower() in m.JUNK_TRANSCRIPTS
 
 
+@pytest.mark.parametrize("junk", ["[end of transcript]", "[BLANK_AUDIO]", "(silence)", ""])
+def test_a_junk_transcript_is_never_pasted(junk, tmp_path, monkeypatch):
+    """Drives the real pipeline, because the membership test above does not.
+
+    That test asserts the strings are in the set and nothing else — delete the
+    guard from _run_pipeline entirely and it still passes, while whisper's
+    "[end of transcript]" lands in whatever the user was typing into. A test that
+    names a feature it never exercises is worse than no test: it occupies the
+    space where the real one should be.
+    """
+    import numpy as np
+
+    m = _mainmod()
+    import engine.inject as inject_mod
+    import engine.polish as polish_mod
+    import engine.store as store_mod
+    import engine.stt as stt_mod
+
+    monkeypatch.setattr(store_mod, "DB_PATH", tmp_path / "junk.db")
+    monkeypatch.setattr(stt_mod, "transcribe", lambda *a, **k: junk)
+    monkeypatch.setattr(store_mod, "dictionary_prompt", lambda: "")
+    monkeypatch.setattr(polish_mod, "needs_cleanup", lambda _t: False)
+    monkeypatch.setattr(polish_mod, "polish", lambda t, *a, **k: t)
+
+    pasted = []
+    monkeypatch.setattr(inject_mod, "paste_text", lambda text, **_kw: pasted.append(text) or True)
+
+    class BarePill:
+        def busy(self, stage=""):
+            pass
+
+        def flash(self, msg, hold_sec=1.6):
+            pass
+
+        def hide(self):
+            pass
+
+    class Bare:
+        exact_mode = False
+        pill = BarePill()
+
+        def _ui_title(self, _t):
+            pass
+
+    m.SimoFlow._run_pipeline(Bare(), np.zeros(16000, dtype=np.float32), None)
+
+    assert pasted == [], f"whisper's silence output reached the cursor: {pasted}"
+    assert store_mod.history() == [], "and it must not be recorded as a dictation either"
+
+
+def test_a_second_instance_is_refused(tmp_path, monkeypatch):
+    """Two copies each install a *consuming* fn tap: the first swallows every
+    press and the second never sees one, so the symptom is a dead fn key with no
+    explanation. This lock is the only thing preventing that, and it had no test —
+    which is how an hour was lost to exactly this failure (lessons.md 018)."""
+    m = _mainmod()
+    lock_path = str(tmp_path / "singleton.lock")
+
+    first = m._acquire_singleton(lock_path)  # noqa: F841 — closing it frees the lock
+
+    with pytest.raises(SystemExit) as refused:
+        m._acquire_singleton(lock_path)
+    assert "already running" in str(refused.value)
+
+
+def test_the_history_database_is_owner_only(tmp_path, monkeypatch):
+    """It holds the plaintext of everything ever dictated. The boot log has a
+    guard and a test for exactly this; the database, which holds far more, had
+    neither."""
+    import stat as stat_mod
+
+    import engine.store as store_mod
+
+    monkeypatch.setattr(store_mod, "DB_PATH", tmp_path / "perms.db")
+    store_mod.log_dictation("raw", "Something private.", 100)
+
+    mode = stat_mod.S_IMODE((tmp_path / "perms.db").stat().st_mode)
+    assert mode == 0o600, f"the dictation history was created mode {oct(mode)}"
+
+
 # --------------------------------------------------------------------------
 # store: history / dictionary / settings / insights on an isolated temp DB
 # --------------------------------------------------------------------------
@@ -1065,3 +1145,97 @@ def test_polish_failure_is_logged_not_swallowed(monkeypatch, capsys):
     assert polish_mod.polish(raw) == raw  # still falls back to the user's words
     out = capsys.readouterr().out.lower()
     assert "polish" in out and "ollama is not running" in out
+
+
+def test_no_dictated_content_reaches_the_page_unescaped():
+    """Markup you dictate must render as text, never execute.
+
+    The dashboard builds its feed with template strings and `innerHTML`, which is
+    the fast path and also the classic XSS one. Everything user-controlled is
+    routed through `esc()` first — but nothing enforced that, so a future
+    interpolation could quietly skip it and the only symptom would be a dictation
+    that says `<img onerror=...>` running code in the page that displays every
+    word you have ever spoken.
+
+    Static check rather than a browser test on purpose: it is the interpolation
+    itself that has to be safe, and that is visible in the source.
+    """
+    import re
+
+    html = (Path(__file__).resolve().parent.parent / "engine/static/dashboard.html").read_text()
+    user_fields = ("polished_text", "raw_text", "term", "phrase", "expansion")
+    unescaped = [
+        match
+        for field in user_fields
+        for match in re.findall(r"\$\{[^}]*" + field + r"[^}]*\}", html)
+        if "esc(" not in match
+    ]
+    assert not unescaped, f"user content interpolated without esc(): {unescaped}"
+
+
+def test_rapid_model_switching_never_orphans_a_server(monkeypatch):
+    """Switching Accurate → Fast → Accurate quickly must not leak a process.
+
+    `_server` and `_current_tier` are process-global and written from at least
+    four threads. Unguarded, concurrent switches all passed the reuse check, all
+    called stop_server, and all spawned a process: one bound the port, the others
+    were orphaned with nothing holding a handle to them.
+
+    The interleaving is forced rather than hoped for. `_whisper_bin` is called
+    once, immediately before the spawn, so two threads reaching it together are
+    two threads about to start a server — the exact window. The first caller
+    parks there until a second arrives. Serialised, the second can never arrive
+    and the wait simply times out; unserialised, both walk through and spawn.
+
+    Without that, the test passes with the lock removed — timing-dependent races
+    do not reproduce on demand, which is what makes them ship.
+    """
+    import threading
+
+    import engine.stt as stt_mod
+
+    spawned = []
+    at_the_gate = threading.Barrier(2, timeout=1.0)
+
+    class FakeProc:
+        def __init__(self, *_a, **_kw):
+            self.terminated = False
+            spawned.append(self)
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.terminated = True
+
+    def gated_whisper_bin():
+        try:
+            at_the_gate.wait()  # only completes if a second thread gets here too
+        except threading.BrokenBarrierError:
+            pass  # timed out alone — which is the serialised, correct behaviour
+        return "/fake/whisper-server"
+
+    monkeypatch.setattr(stt_mod.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(stt_mod, "_whisper_bin", gated_whisper_bin)
+    monkeypatch.setattr(stt_mod, "_kill_port", lambda _p: None)
+    monkeypatch.setattr(stt_mod, "is_up", lambda: any(not p.terminated for p in spawned))
+    monkeypatch.setattr(stt_mod, "_server", None)
+    monkeypatch.setattr(stt_mod, "_current_tier", "accurate")
+
+    threads = [
+        threading.Thread(target=stt_mod.start_server, args=(tier,))
+        for tier in ("fast", "accurate")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    alive = [p for p in spawned if not p.terminated]
+    assert len(alive) <= 1, (
+        f"{len(alive)} whisper-servers left running out of {len(spawned)} spawned — "
+        f"the extras are orphans nothing will reap"
+    )

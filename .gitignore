@@ -9,3 +9,8 @@ tests/*.aiff
 *.log
 *.db
 .DS_Store
+
+# Working notes, not a public document. It records competitor teardowns,
+# machine-specific state and half-formed plans — none of which belong in a repo
+# strangers read.
+docs/ROADMAP.md
