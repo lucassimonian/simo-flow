@@ -1177,20 +1177,25 @@ def test_rapid_model_switching_never_orphans_a_server(monkeypatch):
     """Switching Accurate → Fast → Accurate quickly must not leak a process.
 
     `_server` and `_current_tier` are process-global and written from at least
-    four threads. Unguarded, three concurrent switches all passed the reuse check,
-    all called stop_server, and all spawned a process: one bound the port, the
-    others were orphaned with nothing holding a handle to them. Nothing ever reaps
-    those, and current_tier() could report a model the server was not running.
+    four threads. Unguarded, concurrent switches all passed the reuse check, all
+    called stop_server, and all spawned a process: one bound the port, the others
+    were orphaned with nothing holding a handle to them.
 
-    Asserts on the outcome that matters — every process started is either the
-    survivor or was terminated — rather than on the lock, which would pass even
-    if the lock guarded the wrong region.
+    The interleaving is forced rather than hoped for. `_whisper_bin` is called
+    once, immediately before the spawn, so two threads reaching it together are
+    two threads about to start a server — the exact window. The first caller
+    parks there until a second arrives. Serialised, the second can never arrive
+    and the wait simply times out; unserialised, both walk through and spawn.
+
+    Without that, the test passes with the lock removed — timing-dependent races
+    do not reproduce on demand, which is what makes them ship.
     """
     import threading
 
     import engine.stt as stt_mod
 
     spawned = []
+    at_the_gate = threading.Barrier(2, timeout=1.0)
 
     class FakeProc:
         def __init__(self, *_a, **_kw):
@@ -1206,24 +1211,28 @@ def test_rapid_model_switching_never_orphans_a_server(monkeypatch):
         def kill(self):
             self.terminated = True
 
+    def gated_whisper_bin():
+        try:
+            at_the_gate.wait()  # only completes if a second thread gets here too
+        except threading.BrokenBarrierError:
+            pass  # timed out alone — which is the serialised, correct behaviour
+        return "/fake/whisper-server"
+
     monkeypatch.setattr(stt_mod.subprocess, "Popen", FakeProc)
-    monkeypatch.setattr(stt_mod, "_whisper_bin", lambda: "/fake/whisper-server")
+    monkeypatch.setattr(stt_mod, "_whisper_bin", gated_whisper_bin)
     monkeypatch.setattr(stt_mod, "_kill_port", lambda _p: None)
-    # A server that is only "up" once one has been spawned and not terminated.
-    monkeypatch.setattr(
-        stt_mod, "is_up", lambda: any(not p.terminated for p in spawned)
-    )
+    monkeypatch.setattr(stt_mod, "is_up", lambda: any(not p.terminated for p in spawned))
     monkeypatch.setattr(stt_mod, "_server", None)
     monkeypatch.setattr(stt_mod, "_current_tier", "accurate")
 
     threads = [
         threading.Thread(target=stt_mod.start_server, args=(tier,))
-        for tier in ("fast", "accurate", "fast", "accurate")
+        for tier in ("fast", "accurate")
     ]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=10)
+        t.join(timeout=15)
 
     alive = [p for p in spawned if not p.terminated]
     assert len(alive) <= 1, (
