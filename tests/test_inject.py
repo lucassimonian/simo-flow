@@ -280,6 +280,8 @@ def test_paste_uses_the_key_that_types_v_on_this_layout(mac, monkeypatch):
     key and paste silently did nothing (or worse) for anyone not on QWERTY.
     """
     monkeypatch.setattr(mac.inject, "_keycode_for_character", lambda ch: 47 if ch == "v" else None)
+    monkeypatch.setattr(mac.inject, "_paste_key", mac.inject.KEY_V)
+    mac.inject.refresh_paste_keycode()  # what fn-down does, on the main thread
 
     assert mac.inject.paste_text("hello") is True
 
@@ -292,6 +294,8 @@ def test_paste_falls_back_to_the_us_position_when_the_layout_is_unreadable(mac, 
     Pasting with the US position is what the app always did, so it is the right
     thing to degrade to. Failing to paste would be far worse than guessing."""
     monkeypatch.setattr(mac.inject, "_keycode_for_character", lambda ch: None)
+    monkeypatch.setattr(mac.inject, "_paste_key", mac.inject.KEY_V)
+    mac.inject.refresh_paste_keycode()
 
     assert mac.inject.paste_text("hello") is True
 
@@ -496,3 +500,27 @@ def test_nontext_clipboard_is_cleared_not_left_holding_dictation(mac):
     mac.inject._has_any_content = lambda: True
     mac.inject.paste_text("dictated words")
     assert mac.clipboard is None, "dictation must not be left on the pasteboard"
+
+
+def test_pasting_never_reads_the_keyboard_layout_itself(mac, monkeypatch):
+    """The paste path runs on a background thread and must not touch Carbon.
+
+    Carbon's Text Input Source API asserts it is called on the main queue. From
+    anywhere else `dispatch_assert_queue` raises SIGTRAP and the process dies —
+    no exception, no log, just "Python quit unexpectedly" from a stack naming
+    HIToolbox with nothing to say a background thread was the cause. That shipped
+    and crashed the app on a real machine.
+
+    So the lookup belongs on fn-down, which is on the main thread, and the paste
+    may only read what it left behind.
+    """
+    def explode(_char):
+        raise AssertionError("the layout was read from the paste path — this SIGTRAPs")
+
+    monkeypatch.setattr(mac.inject, "_keycode_for_character", explode)
+    monkeypatch.setattr(mac.inject, "_paste_key", 47)
+
+    assert mac.inject.paste_text("hello") is True
+
+    pressed = [code for code, down, _flags in mac.keys if down and code != mac.inject.KEY_CMD]
+    assert pressed == [47], "the paste must use the cached keycode"

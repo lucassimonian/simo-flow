@@ -47,6 +47,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "    v = KEY_V",
     ),
     (
+        "inject/layout-is-never-read-from-the-paste-thread",
+        "engine/inject.py",
+        "    return _paste_key",
+        '    return _keycode_for_character("v") or KEY_V',
+    ),
+    (
         "inject/clipboard-survives-as-typed-data",
         "engine/inject.py",
         "    previous = _snapshot_pasteboard() if restore else None",
@@ -120,6 +126,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "engine/hotkey.py",
         "            fn_now = bool(CGEventGetFlags(event) & FN_FLAG)",
         "            fn_now = CGEventGetFlags(event) == FN_FLAG",
+    ),
+    (
+        "hotkey/silent-tap-death-is-noticed",
+        "engine/hotkey.py",
+        "            if self._tap is None or CGEventTapIsEnabled(self._tap):\n                continue",
+        "            if True:\n                continue",
     ),
     (
         "hotkey/disabled-tap-is-re-enabled",

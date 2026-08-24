@@ -6,6 +6,8 @@ the system emoji picker / dictation popup regardless of the user's
 
 Needs Input Monitoring + Accessibility permissions.
 """
+import threading
+
 from Quartz import (
     CFMachPortCreateRunLoopSource,
     CFRunLoopAddSource,
@@ -16,6 +18,7 @@ from Quartz import (
     CGEventGetFlags,
     CGEventTapCreate,
     CGEventTapEnable,
+    CGEventTapIsEnabled,
     kCFRunLoopCommonModes,
     kCGEventFlagsChanged,
     kCGEventTapDisabledByTimeout,
@@ -26,6 +29,21 @@ from Quartz import (
 )
 
 FN_FLAG = 0x800000  # kCGEventFlagMaskSecondaryFn
+
+# How often to ask macOS whether our tap is still switched on.
+#
+# The callback already re-enables the tap when macOS *tells* us it disabled one —
+# but that notification is not guaranteed. A tap can come back from sleep, from a
+# fast user switch, or from a permissions change simply switched off, with no
+# event delivered and nothing in any log. The symptom is total: the fn key does
+# nothing, for ever, and the app looks healthy from every other angle. Diagnosed
+# exactly that way — a fresh tap created alongside the dead one received events
+# normally, which proved the system was fine and only ours had died.
+#
+# Two seconds is cheap: CGEventTapIsEnabled is a single Mach call against a port
+# we already hold, and it runs on the hotkey thread where there is nothing else
+# to do between key presses.
+TAP_HEALTH_POLL_SEC = 2.0
 
 
 class HotkeyListener:
@@ -41,6 +59,7 @@ class HotkeyListener:
         self._down = False
         self._tap = None
         self._loop = None  # the runloop serve() is driving, for stop()
+        self._stopping = threading.Event()
 
     def _handle(self, proxy, etype, event, refcon):
         # macOS disables slow taps; re-enable and let the event pass
@@ -89,6 +108,31 @@ class HotkeyListener:
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes)
         CGEventTapEnable(self._tap, True)
 
+    def _watch_tap_health(self) -> None:
+        """Re-enable the tap whenever macOS switches it off behind our back.
+
+        A plain thread, not a runloop timer: a CFRunLoopTimer added to this
+        thread's loop never fired at all, verified by counting callbacks — zero in
+        2.5 seconds against an expected four. Both calls here are Mach sends
+        against a port we already hold and work from any thread, confirmed by
+        disabling the tap and repairing it from a second thread.
+        """
+        while not self._stopping.wait(TAP_HEALTH_POLL_SEC):
+            if self._tap is None or CGEventTapIsEnabled(self._tap):
+                continue
+            CGEventTapEnable(self._tap, True)
+            # A tap dying while fn was held leaves the key latched down for
+            # ever: recording never ends and every later press is ignored. Same
+            # recovery as the notified case in _handle.
+            if self._down:
+                self._down = False
+                self.on_release()
+            print(
+                "[simo] the fn-key tap had been disabled by macOS — re-enabled it "
+                "(this happens after sleep, and is silent)",
+                flush=True,
+            )
+
     def serve(self) -> None:
         """Drive this thread's runloop until stop(). Call on the thread that attached.
 
@@ -103,9 +147,16 @@ class HotkeyListener:
         serve() have to run on the same thread.
         """
         self._loop = CFRunLoopGetCurrent()
+        threading.Thread(
+            target=self._watch_tap_health, daemon=True, name="simo-tap-watchdog"
+        ).start()
         CFRunLoopRun()
 
-    def stop(self) -> None:
+    def stop(self) -> None:  # noqa: D401
+        self._stopping.set()
+        return self._stop_runloop()
+
+    def _stop_runloop(self) -> None:
         """End serve(). Safe to call from another thread — which is the point, since
         the serving thread is blocked inside CFRunLoopRun and cannot end itself."""
         if self._loop is not None:
