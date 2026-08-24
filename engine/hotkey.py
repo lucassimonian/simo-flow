@@ -6,14 +6,12 @@ the system emoji picker / dictation popup regardless of the user's
 
 Needs Input Monitoring + Accessibility permissions.
 """
-import time
+import threading
 
 from Quartz import (
     CFMachPortCreateRunLoopSource,
     CFRunLoopAddSource,
-    CFRunLoopAddTimer,
     CFRunLoopGetCurrent,
-    CFRunLoopTimerCreate,
     CFRunLoopRun,
     CFRunLoopStop,
     CFRunLoopWakeUp,
@@ -61,6 +59,7 @@ class HotkeyListener:
         self._down = False
         self._tap = None
         self._loop = None  # the runloop serve() is driving, for stop()
+        self._stopping = threading.Event()
 
     def _handle(self, proxy, etype, event, refcon):
         # macOS disables slow taps; re-enable and let the event pass
@@ -109,29 +108,30 @@ class HotkeyListener:
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes)
         CGEventTapEnable(self._tap, True)
 
-    def _check_tap_health(self, *_args) -> None:
-        """Re-enable the tap if macOS has switched it off behind our back.
+    def _watch_tap_health(self) -> None:
+        """Re-enable the tap whenever macOS switches it off behind our back.
 
-        Runs on the hotkey thread's own runloop, so it cannot be starved by a
-        busy interface — which matters, because a starved watchdog for a silent
-        failure is no watchdog at all.
+        A plain thread, not a runloop timer: a CFRunLoopTimer added to this
+        thread's loop never fired at all, verified by counting callbacks — zero in
+        2.5 seconds against an expected four. Both calls here are Mach sends
+        against a port we already hold and work from any thread, confirmed by
+        disabling the tap and repairing it from a second thread.
         """
-        if self._tap is None:
-            return
-        if CGEventTapIsEnabled(self._tap):
-            return
-        CGEventTapEnable(self._tap, True)
-        # A tap dying while fn was held leaves the key latched down for ever:
-        # recording never ends and every later press is ignored. Same recovery as
-        # the notified case in _handle.
-        if self._down:
-            self._down = False
-            self.on_release()
-        print(
-            "[simo] the fn-key tap had been disabled by macOS — re-enabled it "
-            "(this happens after sleep, and is silent)",
-            flush=True,
-        )
+        while not self._stopping.wait(TAP_HEALTH_POLL_SEC):
+            if self._tap is None or CGEventTapIsEnabled(self._tap):
+                continue
+            CGEventTapEnable(self._tap, True)
+            # A tap dying while fn was held leaves the key latched down for
+            # ever: recording never ends and every later press is ignored. Same
+            # recovery as the notified case in _handle.
+            if self._down:
+                self._down = False
+                self.on_release()
+            print(
+                "[simo] the fn-key tap had been disabled by macOS — re-enabled it "
+                "(this happens after sleep, and is silent)",
+                flush=True,
+            )
 
     def serve(self) -> None:
         """Drive this thread's runloop until stop(). Call on the thread that attached.
@@ -147,19 +147,16 @@ class HotkeyListener:
         serve() have to run on the same thread.
         """
         self._loop = CFRunLoopGetCurrent()
-        timer = CFRunLoopTimerCreate(
-            None,
-            time.time() + TAP_HEALTH_POLL_SEC,
-            TAP_HEALTH_POLL_SEC,
-            0,
-            0,
-            self._check_tap_health,
-            None,
-        )
-        CFRunLoopAddTimer(self._loop, timer, kCFRunLoopCommonModes)
+        threading.Thread(
+            target=self._watch_tap_health, daemon=True, name="simo-tap-watchdog"
+        ).start()
         CFRunLoopRun()
 
-    def stop(self) -> None:
+    def stop(self) -> None:  # noqa: D401
+        self._stopping.set()
+        return self._stop_runloop()
+
+    def _stop_runloop(self) -> None:
         """End serve(). Safe to call from another thread — which is the point, since
         the serving thread is blocked inside CFRunLoopRun and cannot end itself."""
         if self._loop is not None:

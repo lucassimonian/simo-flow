@@ -128,6 +128,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "            fn_now = CGEventGetFlags(event) == FN_FLAG",
     ),
     (
+        "hotkey/silent-tap-death-is-noticed",
+        "engine/hotkey.py",
+        "            if self._tap is None or CGEventTapIsEnabled(self._tap):\n                continue",
+        "            if True:\n                continue",
+    ),
+    (
         "hotkey/disabled-tap-is-re-enabled",
         "engine/hotkey.py",
         "            CGEventTapEnable(self._tap, True)\n            return event",
