@@ -259,6 +259,10 @@ class SimoFlow(rumps.App):
     def _on_press(self, at: float | None = None) -> None:
         # `at` is when the key physically moved, stamped on the hotkey thread.
         self._t_down = time.time() if at is None else at
+        # Main thread, and the last moment the answer can change before we paste.
+        # Carbon's input-source API asserts it is called here and kills the
+        # process from anywhere else — see inject.refresh_paste_keycode.
+        inject.refresh_paste_keycode()
         with self._tap_lock:
             self._fn_down = True
         if self._locked:

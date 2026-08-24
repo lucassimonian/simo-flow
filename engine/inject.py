@@ -138,9 +138,37 @@ def _keycode_for_character(char: str) -> int | None:
             cf.CFRelease(source)
 
 
+# The last keycode read from the layout, refreshed on the main thread only.
+#
+# Carbon's Text Input Source API asserts it is called on the main queue, and
+# paste_text runs on the pipeline worker. Calling it there does not fail politely
+# — `dispatch_assert_queue` raises SIGTRAP and the whole app dies with "Python
+# quit unexpectedly", from a stack that names HIToolbox and gives no hint that a
+# background thread was the problem. That shipped, and it crashed the app on a
+# real machine.
+#
+# So the lookup happens where it is legal, and the paste path only ever reads the
+# result. Starting at the US position means a paste before the first refresh is
+# exactly what this app did before layout support existed.
+_paste_key = KEY_V
+
+
+def refresh_paste_keycode() -> None:
+    """Re-read where "v" lives on the current layout. MAIN THREAD ONLY.
+
+    Called on every fn-down, which is both on the main thread and the moment the
+    answer could have changed — people switch input source between sentences.
+    Costs a median 0.01ms because the scan stops at the first match, so paying it
+    per press is cheaper than the machinery to be told when the layout changes.
+    """
+    global _paste_key
+    _paste_key = _keycode_for_character("v") or KEY_V
+
+
 def _paste_keycode() -> int:
-    """The key to press with Command to paste, on this user's keyboard."""
-    return _keycode_for_character("v") or KEY_V
+    """The key to press with Command to paste. Safe from any thread — it reads a
+    value the main thread computed, and never calls into Carbon itself."""
+    return _paste_key
 
 # ponytail: a flat cap, not a streaming copy. Holding the pasteboard in memory for
 # ~300ms is fine for documents and screenshots; a 4K video or a huge file promise

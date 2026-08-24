@@ -47,6 +47,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "    v = KEY_V",
     ),
     (
+        "inject/layout-is-never-read-from-the-paste-thread",
+        "engine/inject.py",
+        "    return _paste_key",
+        '    return _keycode_for_character("v") or KEY_V',
+    ),
+    (
         "inject/clipboard-survives-as-typed-data",
         "engine/inject.py",
         "    previous = _snapshot_pasteboard() if restore else None",
