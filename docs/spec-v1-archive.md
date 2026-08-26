@@ -1,10 +1,19 @@
-# Simo Flow — Build Spec (v1)
+# Build spec, v1 (July 2026) — archived
+
+> **Historical — superseded.** This is the original v1 build specification from
+> July 2026, kept for provenance. It does **not** describe the shipped app: it
+> predates the per-utterance microphone, the whisper-server client, the dictation
+> integrity guard, model tiers and the Privacy page, and several of its
+> prescriptions were later reversed by things that went wrong in production.
+>
+> Where it contradicts the code, the code is right. For how Simo Flow actually
+> works, read `README.md` and `AGENTS.md`.
+
 
 > A **fully local, offline, private** clone of Wispr Flow for macOS (MacBook Air M5).
 > Hold a key, speak, release → cleaned-up text appears at your cursor in any app.
 > Everything runs on-device: whisper.cpp (Metal) for speech, Ollama (3B) for cleanup.
-> This document is the single source of truth for the build. It is written to be
-> executed autonomously by an agent (Fable 5 via `/GOAL`).
+> This document was the single source of truth for the v1 build.
 
 ---
 
@@ -116,7 +125,7 @@ This mirrors Wispr's own split (native helper + JS UI) but keeps everything loca
 - LLM: Ollama `qwen2.5:3b-instruct` (fallback `llama3.2:3b`)
 
 **Dashboard**
-- React + Vite (or plain HTML + Alpine.js if Fable prefers zero build step), Tailwind for styling.
+- React + Vite, or plain HTML with zero build step; Tailwind for styling.
 - Talks only to `localhost:7331`. No external calls, ever (matches offline promise + user's CSP rules).
 
 **Build deps**

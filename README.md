@@ -36,9 +36,14 @@ Two speed/accuracy tiers, switchable from the menu bar:
 
 Measured warm on an M5 Air, stopwatch stopped when the keystroke lands — not when
 the app finishes tidying up afterwards, which is a further ~300ms the user never
-waits for. The cleanup pass is skipped entirely when the transcript has no fillers
-and no stutters, which on real usage is **72% of dictations** (see §"Engineering
-notes"). That is the difference between the two latency columns.
+waits for. The cleanup pass is skipped entirely when a sentence has no fillers
+and no stutters, which across 253 real dictations is **74% of them**. Cleanup is
+also verified a sentence at a time rather than a whole dictation at a time: the
+integrity guard is all-or-nothing over whatever it is given, so one reworded
+clause used to invalidate every other clause with it, and a long dictation was
+rejected 100% of the time after a 5.2 second wait. Splitting first took that to
+1.7 seconds while rescuing the sentences the model did clean correctly. That is
+the difference between the two latency columns.
 
 † `base.en` tends to omit disfluencies rather than transcribe them, so there is
 usually nothing for cleanup to remove and the fast tier rarely pays for it. The
@@ -70,7 +75,8 @@ A local dashboard at `localhost:7331` — searchable history, insights (words pe
 - ✨ **Clean mode**: removes *um*s and false starts, fixes punctuation — keeps your hedges and wording (the LLM is explicitly forbidden from substituting words)
 - 🎯 **Exact mode**: verbatim whisper output, no LLM pass
 - 🔴 **Mic indicator only while dictating**: the stream opens on `fn` and closes the instant you finish, so macOS's mic indicator isn't lit while the app sits idle
-- 📊 **Dashboard** (`localhost:7331`): history feed with search, WPM / streak / activity insights, and a **Dictionary** that biases the speech model toward your names and jargon
+- ✂️ **Snippets**: say "my email address", get your email address — the things you retype constantly and always mangle out loud. Applied after cleanup, so a shortcut you configured is never mistaken for the model rewriting you
+- 📊 **Dashboard** (`localhost:7331`): history feed with search, WPM / streak / activity insights, a **Dictionary** that biases the speech model toward your names and jargon, and **Snippets**
 - 🎯 **Pastes where you started**: the focused window is snapshotted on `fn`-down and re-activated before pasting, so switching apps mid-transcription doesn't send your words to the wrong place
 - 📋 **Never eats your clipboard**: the pasteboard `changeCount` is checked before restoring, so a `Cmd+C` during transcription survives
 - 🗄 Everything stored in a local SQLite you own (`~/.simo-flow.db`, `0600`)
@@ -122,35 +128,73 @@ Things that turned out to matter, in the order they bit me:
 
 ```
 engine/__main__.py   menu-bar app, fn state machine, serialized pipeline worker, shutdown hooks
-engine/hotkey.py     HID-level consuming CGEventTap
-engine/audio.py      on-demand mic capture, silence trim + silence guard
+engine/hotkey.py     HID-level consuming CGEventTap, on its own runloop thread
+engine/audio.py      on-demand mic capture on a dedicated thread, silence trim + dead-mic detection
 engine/stt.py        whisper-server client + tiers, health-check/restart, orphan reaping
 engine/polish.py     LLM cleanup + deletion-only integrity guard (subsequence + content retention) + hedge few-shot
 engine/inject.py     focus snapshot/restore → clipboard set → 4-event Cmd+V → guarded restore
-engine/store.py      SQLite (0600): history, dictionary, settings, insights
+engine/snippets.py   spoken-phrase expansion, applied after cleanup so it is never mistaken for a rewrite
+engine/store.py      SQLite (0600): history, dictionary, snippets, settings, insights
 engine/api.py        FastAPI on 127.0.0.1:7331 — Origin + Host guarded, zero external calls
 engine/static/       the dashboard (single self-contained HTML file, iCloud aesthetic)
 engine/overlay.py    the recording pill (Liquid Glass + scrim, live waveform, stage labels)
 simo                 control script + LaunchAgent (install/start/stop/restart/status/log)
-tools/               rehearse_paste.py (reproduce the wrong-window bug), pill_preview.py (render the pill over controlled backgrounds)
-tests/               assert-based per-module self-checks + full E2E
+tools/mutation_sweep.py    break each guard in turn, fail if the suite stays green
+tools/polish_threshold.py  measure cleanup latency and rejection against real history
+tools/benchmark.py         stage-by-stage latency, with real keystrokes disabled
+tools/rehearse_paste.py    reproduce the wrong-window bug
+tools/pill_preview.py      render the pill over controlled backgrounds
+tests/                     144 hermetic tests + per-module self-checks + full E2E
 ```
 
 Every module runs standalone as its own self-check: `./.venv/bin/python -m engine.stt` etc.
 
 ## Testing
 
-Three layers, split by what they need:
+**144 hermetic tests, and 53 guards each proven to fail when broken.**
 
-- **Unit tests** (`tests/test_units.py`, `tests/test_inject.py`) — pure logic with no mic, server, or GUI: the silence guard, junk-transcript filter, transcript dedupe, the SQLite store, the dashboard's `Origin`/`Host` guards, history delete/export, and the whole paste orchestration (focus restore, clipboard guard, the four-event `Cmd+V`, the Accessibility gate).
-- **Property tests** (`tests/test_polish_properties.py`) — Hypothesis generates thousands of transcripts and attacks the dictation-integrity guard with the four ways a chat model corrupts one: adding words, reordering, dropping a negator, collapsing to a keyword. Hand-picked examples missed a meaning-inverting bug once already; these state the contract instead. Verified to bite by disabling each check in turn and watching exactly one property fail.
-- **End-to-end** (`tests/test_pipeline.py`) + per-module self-checks — exercise the real mic → whisper → Ollama → paste path, so they need the hardware and servers and run locally, not in CI.
+That second number is the one that matters, and it exists because of a bad day:
+two bugs reached me in a single afternoon, both with a green suite, and one of
+the tests was actively asserting the broken behaviour. A test written by whoever
+misunderstood the problem cannot catch that misunderstanding.
 
-The first two layers are hermetic and run in CI on every push, alongside lint and
-a secret scan.
+So `tools/mutation_sweep.py` disables each safety guard in turn — the negator
+check, the clipboard restore, the Accessibility gate, the fn-key consumption, the
+log permissions — and re-runs the whole suite against each one. **A guard whose
+removal leaves the suite green is untested, however much coverage the file
+appears to have.** CI fails the build if any guard survives, and fails it just as
+hard if a mutation goes stale, because a mutation that no longer matches checks
+nothing at all. That second rule is there because it happened: the guard keeping
+dictated transcripts out of a world-readable file quietly stopped being checked
+for a release.
+
+Four layers, split by what they need:
+
+| Layer | Files | Needs |
+|---|---|---|
+| **Unit** | `test_units.py`, `test_inject.py`, `test_hotkey.py`, `test_snippets.py` | nothing — no mic, server or GUI |
+| **Concurrency** | `test_audio_offthread.py` | nothing; wedges the device layer and asserts the caller never waits |
+| **Property** | `test_polish_properties.py` | nothing; Hypothesis attacks the integrity guard |
+| **End-to-end** | `test_pipeline.py`, per-module self-checks | a real mic, whisper and Ollama — run by hand before a release |
+
+The concurrency layer exists because of the worst bug this app ever had: opening
+the microphone inside the fn-key event tap froze an entire MacBook mid-meeting,
+because a tap that blocks stalls the *system* input pipeline — every key in every
+app. Those tests wedge the device layer for 1.5 seconds and assert every hotkey
+entry point still returns immediately. They fail on the pre-fix code.
+
+The property layer generates thousands of transcripts and attacks the
+dictation-integrity guard with the four ways a chat model corrupts one: adding
+words, reordering, dropping a negator, collapsing to a keyword. Hand-picked
+examples missed a meaning-inverting bug once already; these state the contract
+instead.
+
+Everything except the end-to-end layer runs in CI on every push, on two macOS
+versions, alongside lint, a full-history secret scan and `pip-audit`.
 
 ```bash
 ./.venv/bin/python -m pytest tests/ --ignore=tests/test_pipeline.py   # what CI runs
+./.venv/bin/python tools/mutation_sweep.py                            # prove the guards are tested
 ./simo rehearse                                                       # rehearse the real paste path
 ```
 

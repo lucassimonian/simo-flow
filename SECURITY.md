@@ -31,7 +31,7 @@ in place, and how to report a vulnerability.
 | A website reading your history (DNS-rebinding) | `Host` header is validated on **every** dashboard route; non-localhost hosts are rejected `403`. |
 | A website writing to your dictionary (CSRF) | `Origin` header is checked on state-changing routes. |
 | SQL injection via search / dictionary input | All queries are parameterized; no string-built SQL. |
-| XSS in the dashboard | All user-controlled values are escaped (`textContent` → `innerHTML`) before rendering. |
+| XSS in the dashboard | Every user-controlled value is escaped through `esc()` — which round-trips it via `textContent` — before it reaches `innerHTML`, so markup you dictate is rendered, never executed. Values written directly use `textContent`. |
 | World-readable transcripts on a shared machine | DB and log are `0600`, tightened on upgrade as well as creation. |
 | Dictated text lingering on the clipboard | Clipboard is snapshot and restored around paste; non-restorable content is cleared, not left. |
 

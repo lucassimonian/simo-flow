@@ -4,6 +4,7 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import wave
 from pathlib import Path
@@ -24,6 +25,10 @@ MODELS = {
     "fast": _MODELS_DIR / "ggml-base.en.bin",
 }
 DEFAULT_TIER = "accurate"
+
+# How long Quit will wait for an in-flight model switch before giving up on a
+# clean shutdown. Long enough for a normal swap, short enough not to look hung.
+SHUTDOWN_LOCK_WAIT_SEC = 5.0
 MODEL_PATH = MODELS[DEFAULT_TIER]  # back-compat for the self-check
 
 _current_tier = DEFAULT_TIER
@@ -44,6 +49,22 @@ def _whisper_bin() -> str:
 
 
 _server: subprocess.Popen | None = None
+
+# `_server` and `_current_tier` are process-global and are written from at least
+# four threads: boot on the main runloop, a fresh thread per model-switch click,
+# the pipeline worker when it finds the server dead, and both the atexit and
+# SIGTERM handlers on the way out.
+#
+# Without this, switching Accurate → Fast → Accurate quickly puts three threads
+# inside start_server at once. All three pass the reuse check, all three call
+# stop_server, all three spawn a process — one binds the port and the others are
+# orphaned, with `_server` holding only the last. Nothing ever reaps them, and
+# current_tier() can report a model the server is not running.
+#
+# Reentrant because start_server calls stop_server, and the same thread must be
+# able to hold it twice. audio.py guards PortAudio the same way; this module had
+# a subprocess handle in a global and no guard at all.
+_SERVER_LOCK = threading.RLock()
 
 
 def _kill_port(port: int) -> None:
@@ -70,6 +91,11 @@ def start_server(tier: str = DEFAULT_TIER) -> None:
     If a server for a *different* tier is already up, it is replaced. An orphan
     server from a previous process (ours died without cleanup) is reaped first.
     """
+    with _SERVER_LOCK:
+        _start_server_locked(tier)
+
+
+def _start_server_locked(tier: str) -> None:
     global _server, _current_tier
     model_path = MODELS.get(tier, MODELS[DEFAULT_TIER])
     if not model_path.exists():  # missing turbo download → fall back to base.en
@@ -119,7 +145,27 @@ def is_up() -> bool:
 
 def stop_server() -> None:
     """Terminate the server and wait for it to release the port, so an
-    immediate restart (tier swap) doesn't race the old process off :7332."""
+    immediate restart (tier swap) doesn't race the old process off :7332.
+
+    Bounded acquire: this runs on the quit path, and a model switch in flight can
+    hold the lock for several seconds while whisper loads. Blocking there would
+    make Quit look hung. Giving up is safe — the next launch reaps orphans via
+    _kill_port before binding.
+    """
+    if not _SERVER_LOCK.acquire(timeout=SHUTDOWN_LOCK_WAIT_SEC):
+        print(
+            "[simo] a model switch is still in flight — leaving whisper-server for "
+            "the next launch to reap",
+            flush=True,
+        )
+        return
+    try:
+        _stop_server_locked()
+    finally:
+        _SERVER_LOCK.release()
+
+
+def _stop_server_locked() -> None:
     global _server
     if _server:
         _server.terminate()
