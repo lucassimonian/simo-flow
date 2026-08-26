@@ -145,3 +145,50 @@ def test_being_disabled_while_fn_is_held_releases_the_stuck_key(tap, monkeypatch
     # and a genuine press afterwards still works
     tap._handle(None, hotkey.kCGEventFlagsChanged, object(), None)
     assert tap.events["press"] == 2
+
+
+def test_a_tap_switched_off_by_macos_is_noticed_and_repaired(monkeypatch):
+    """The silent death, and the only test here that uses a real tap.
+
+    macOS can switch a tap off without sending the disable notification the
+    callback listens for — after sleep, a fast user switch, a permissions change.
+    The fn key then does nothing, for ever, with no error and nothing in any log.
+    Diagnosed exactly that way: a freshly created tap running alongside the dead
+    one received 36 events in five seconds, proving the system was fine.
+
+    A real tap, deliberately. The failure is macOS changing state underneath us,
+    and a fake tap cannot be switched off by macOS — this is the same reason the
+    keyboard-layout crash shipped past a mocked test. Skipped where Input
+    Monitoring is not granted, since there is nothing to observe.
+    """
+    import threading
+    import time
+
+    from Quartz import CGEventTapEnable, CGEventTapIsEnabled
+
+    released = []
+    listener = hotkey.HotkeyListener(on_press=lambda: None, on_release=lambda: released.append(1))
+    try:
+        listener.attach()
+    except PermissionError:
+        pytest.skip("Input Monitoring not granted — no tap to observe")
+
+    monkeypatch.setattr(hotkey, "TAP_HEALTH_POLL_SEC", 0.05)
+    threading.Thread(target=listener.serve, daemon=True).start()
+    try:
+        deadline = time.time() + 2
+        while listener._tap is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert CGEventTapIsEnabled(listener._tap), "the tap never came up"
+
+        listener._down = True  # fn was held when it died
+        CGEventTapEnable(listener._tap, False)  # what macOS does after sleep
+
+        deadline = time.time() + 3
+        while not CGEventTapIsEnabled(listener._tap) and time.time() < deadline:
+            time.sleep(0.02)
+
+        assert CGEventTapIsEnabled(listener._tap), "the watchdog never repaired the tap"
+        assert released, "a tap dying while fn is held must release it, or it latches for ever"
+    finally:
+        listener.stop()
