@@ -4,6 +4,110 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-08-26
+
+Forty commits. Two crashes, a silent death, every open issue, and a three-fold
+speed-up on long dictations.
+
+### Fixed — the app was dying
+
+- **Segmentation fault under CoreAudio's real-time thread.** `_reinit_portaudio`
+  called `sd._terminate()` — which frees the whole library — without closing our
+  stream first, so CoreAudio kept reading a buffer that had just been freed. macOS
+  named it precisely: three crash reports in ninety seconds, each one launchd
+  restarting the app into the next. Present since v2.2.0. The stream is closed
+  first now, and every call into PortAudio goes through one process-wide lock,
+  because its initialise and terminate are global rather than per-stream.
+
+- **SIGTRAP from the keyboard-layout lookup.** Carbon's Text Input Source API
+  asserts it is called on the main queue. `paste_text` runs on the pipeline
+  worker, and the Dvorak/AZERTY support added in this cycle called it there on
+  every paste. It does not fail politely — `dispatch_assert_queue` kills the
+  process. The lookup now happens on fn-down, which is on the main thread and is
+  also the last moment the answer can change.
+
+  The test for that feature passed the entire time, because it patched the lookup
+  with a fake and a fake cannot SIGTRAP. A third test now makes the lookup raise
+  if the paste path reaches for it.
+
+### Fixed — the fn key died and said nothing
+
+macOS can switch an event tap off without sending the disable notification the
+callback listens for: after sleep, a fast user switch, a permissions change. The
+key then does nothing, for ever, with no error anywhere. Diagnosed by creating a
+second tap alongside the dead one — it received 36 events in five seconds, which
+proved the system was fine and only ours had stopped.
+
+A watchdog thread now checks `CGEventTapIsEnabled` every two seconds and repairs
+it, releasing a stuck fn as the notified path does. Built twice: the first version
+used a `CFRunLoopTimer` and never fired once — zero callbacks against an expected
+four — and would have shipped as a silent no-op that looked like a fix.
+
+### Fixed — the freeze was still one press away
+
+v2.2.3 reverted the change that froze a MacBook mid-meeting, and that revert
+closed one of **three** routes to the same blocking call. The dangerous survivor
+needed no device change at all: a silent capture — exactly what connecting AirPods
+mid-sentence produces — set an internal flag, so the *next* press called
+`sd._terminate()` on the event-tap thread.
+
+Every device operation now runs on a dedicated `simo-audio` thread, and the event
+tap has its own runloop thread so a busy interface cannot get it disabled.
+Confirmed on real hardware: `sd._terminate()` executed during a live AirPods
+switch while another app held the microphone, and 13 of 13 dictations landed with
+no stall.
+
+### Changed — long dictations are three times faster and now actually work
+
+Above eighty words the integrity guard rejected the cleanup **100%** of the time,
+median 5,245ms. The cause was not the model degrading on long input: the guard is
+all-or-nothing over whatever it is given, so one reworded clause invalidated every
+other clause with it, and over thirty clauses rejection was near certain.
+
+Cleanup is now verified a sentence at a time. A bad clause costs its own sentence,
+and sentences with nothing to remove skip the model entirely. Measured on the same
+dictations: 0/6 improved becomes 3/5, and 5,245ms becomes 1,726ms.
+
+### Added
+
+- **Snippets.** Say "my email address", get your email address. Applied after
+  cleanup, so a shortcut you configured is never mistaken for the model rewriting
+  you — and never in a position to be rejected by the guard.
+- **A dead microphone says so.** A bit-exact-zero capture is not quiet speech; it
+  means the device opened, reported success and delivered nothing. Muted, revoked
+  permission, or a missing entitlement — all fixable, none guessable from "no
+  speech detected".
+- **Startup says what it is doing**, stage by stage with elapsed time, ending with
+  "fn-key tap attached". Whether the tap was live was previously unobservable from
+  outside the process, which is a strange gap in the one component whose failure
+  mode is total silence.
+- **Real Liquid Glass.** `--blur` had existed since the first dashboard and was
+  applied to exactly one element, so every card was opaque. Plus a defined type
+  ramp replacing sixteen ad-hoc sizes, and `prefers-reduced-transparency`.
+
+### Fixed — the closed issues
+
+- A copied **image or rich text survives dictating** (#11). The clipboard is
+  snapshotted as typed data rather than round-tripped through a string, which
+  cleared images and silently stripped formatting from styled text.
+- **Paste works on Dvorak and AZERTY** (#10). Virtual key codes are positions, not
+  letters.
+- **Older dictations can be tidied** of whisper's line wrapping (#9), opt-in on the
+  Privacy page, with the database backed up through SQLite's own backup API first.
+- **CI runs on two macOS versions** and audits dependencies (#14), which found a
+  real advisory on its first run.
+
+### Internal
+
+- 144 tests, up from 78. 55 guards, each proven to fail when broken, up from 29.
+- `tools/mutation_sweep.py` now fails the build on a **stale** mutation. It used to
+  print "out of date" and exit zero, which is how the guard keeping transcripts out
+  of a world-readable file went unchecked for a release.
+- `SPEC.md` archived. It opened by describing itself as written for autonomous
+  execution by an agent, then specified pywhispercpp, a warm-mic ring buffer, a
+  WebSocket and React+Vite — none of which exist — and prescribed the always-open
+  microphone this rebuild removed.
+
 ## [2.2.4] — 2026-08-15
 
 ### Fixed
