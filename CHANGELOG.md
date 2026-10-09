@@ -4,6 +4,51 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [2.3.1] — 2026-10-09
+
+Your words are never lost, and they no longer linger anywhere you didn't put them.
+
+### Fixed — a crash could still lose what you said
+
+The transcript was saved only after polish, snippets and the paste had all run.
+v2.2 covered the one failure people hit (a refused paste), but a crash in any
+of the other three still threw away words the user had spoken and waited for.
+The transcript is now saved the moment Whisper returns, before anything that
+can fail, and the row is completed with the pasted text afterwards.
+
+### Fixed — "Delete all" left recoverable copies
+
+Deleted rows stayed in the database file's free pages until SQLite reused them,
+and the backups kept everything. Delete-all now rebuilds the file (`VACUUM`)
+and removes the backups.
+
+### Fixed — dictated text was being kept by other apps
+
+- **Clipboard managers** (Raycast, Maccy, Paste, Alfred) saved every dictation,
+  because the paste goes through the pasteboard. It is now marked transient and
+  concealed, the nspasteboard.org convention they honour.
+- **Universal Clipboard** offered every dictation to the user's iPhone. The
+  paste is now marked current-host-only.
+
+### Fixed — the log was a second copy of everything said
+
+`~/.simo-flow.log` recorded each raw and pasted transcript, and "Delete all"
+cannot reach a log. It now records lengths only, including for rejected
+polish output.
+
+### Fixed — snippets after a dotted capital İ
+
+Snippet triggers were found by lowercasing the text and reusing the offsets.
+Lowercasing `İ` produces two characters, so every offset after it was wrong.
+Triggers are now found by regex group on the original text.
+
+### Evidence
+
+155 tests. Mutation sweep: 64 of 64 guards caught when broken (55 in v2.3.0).
+Checked by hand on the real app: a 27-second dictation pasted word for word,
+on the built-in microphone and on AirPods, and the clipboard restored after a
+paste.
+
 ## [2.3.0] — 2026-08-26
 
 Forty commits. Two crashes, a silent death, every open issue, and a three-fold
