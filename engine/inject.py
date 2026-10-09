@@ -207,10 +207,22 @@ def _get_clipboard() -> str | None:
     return NSPasteboard.generalPasteboard().stringForType_(NSPasteboardTypeString)
 
 
+# Clipboard managers (Raycast, Maccy, Paste, Alfred) keep everything that crosses
+# the pasteboard, so every dictation was being saved by them for good. These
+# marker types are the nspasteboard.org convention they honour: transient means
+# do not record, concealed means do not display. Current-host-only keeps the
+# text off Universal Clipboard, so it is not offered to the user's iPhone.
+_TRANSIENT_TYPE = "org.nspasteboard.TransientType"
+_CONCEALED_TYPE = "org.nspasteboard.ConcealedType"
+_CURRENT_HOST_ONLY = 1  # NSPasteboardContentsCurrentHostOnly
+
+
 def _set_clipboard(text: str) -> None:
     pb = NSPasteboard.generalPasteboard()
-    pb.clearContents()
+    pb.prepareForNewContentsWithOptions_(_CURRENT_HOST_ONLY)  # also clears it
     pb.setString_forType_(text, NSPasteboardTypeString)
+    pb.setString_forType_("", _TRANSIENT_TYPE)
+    pb.setString_forType_("", _CONCEALED_TYPE)
 
 
 def _clear_clipboard() -> None:

@@ -58,12 +58,24 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
-def log_dictation(raw: str, polished: str, duration_ms: int, audio_sec: float = 0.0, app_name: str = "") -> None:
+def log_dictation(raw: str, polished: str, duration_ms: int, audio_sec: float = 0.0, app_name: str = "") -> int:
+    """Record a dictation and return its row id, so the pipeline can save the
+    words the moment they exist and fill in the final text afterwards."""
     with _conn() as c:
-        c.execute(
+        cur = c.execute(
             "INSERT INTO history (ts, app_name, raw_text, polished_text, duration_ms, word_count, audio_sec)"
             " VALUES (datetime('now','localtime'), ?, ?, ?, ?, ?, ?)",
             (app_name, raw, polished, duration_ms, len(polished.split()), audio_sec),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def finish_dictation(row_id: int, polished: str, duration_ms: int) -> None:
+    """Replace a saved transcript with the text that was actually pasted."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE history SET polished_text = ?, duration_ms = ?, word_count = ? WHERE id = ?",
+            (polished, duration_ms, len(polished.split()), row_id),
         )
 
 
@@ -93,11 +105,25 @@ def history_all() -> list[dict]:
 
 def clear_history() -> int:
     """Delete all dictation history. Returns the number of rows removed.
-    (The dictionary and settings are left intact.)"""
+    (The dictionary and settings are left intact.)
+
+    The dashboard promises this removes every stored dictation from the Mac,
+    so a plain DELETE is not enough: SQLite leaves deleted text readable in the
+    file's free pages, and every tidy-up backup holds a full copy. VACUUM
+    rebuilds the file without the freed pages, and the backups go too.
+    """
     with _conn() as c:
         n = c.execute("SELECT COUNT(*) FROM history").fetchone()[0]
         c.execute("DELETE FROM history")
-        return n
+    vacuum = sqlite3.connect(DB_PATH)
+    try:
+        vacuum.execute("VACUUM")
+    finally:
+        vacuum.close()
+    for backup in DB_PATH.parent.glob(f"{DB_PATH.name}.bak-*"):
+        backup.unlink()
+        print(f"[simo] removed history backup {backup.name}", flush=True)
+    return n
 
 
 def history_needing_flatten() -> int:

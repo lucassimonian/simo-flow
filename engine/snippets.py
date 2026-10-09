@@ -49,11 +49,14 @@ def expand(text: str, snippets: dict[str, str]) -> str:
     # Longest first: alternation is first-match-wins, so "my work email" has to be
     # offered before "my email" or the shorter one always claims the prefix.
     ordered = sorted(usable, key=len, reverse=True)
+    # One capture group per trigger, so a match is identified by which group it
+    # filled. Looking it up by m.group(0).lower() raised KeyError for "İstanbul":
+    # 'İ'.lower() is two characters, and the lost lookup lost the dictation.
     pattern = re.compile(
-        r"\b(?:" + "|".join(re.escape(t) for t in ordered) + r")\b", re.IGNORECASE
+        r"\b(?:" + "|".join(f"({re.escape(t)})" for t in ordered) + r")\b", re.IGNORECASE
     )
 
-    expanded = pattern.sub(lambda m: usable[m.group(0).lower()], text)
+    expanded = pattern.sub(lambda m: usable[ordered[(m.lastindex or 1) - 1]], text)
     if len(expanded) > MAX_EXPANDED_CHARS:
         print(
             f"[simo] snippet expansion would produce {len(expanded)} characters — "
