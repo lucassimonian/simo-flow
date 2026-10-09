@@ -253,8 +253,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "snippets/whole-phrases-only",
         "engine/snippets.py",
-        'r"\\b(?:" + "|".join(re.escape(t) for t in ordered) + r")\\b", re.IGNORECASE',
-        '"|".join(re.escape(t) for t in ordered), re.IGNORECASE',
+        'r"\\b(?:" + "|".join(f"({re.escape(t)})" for t in ordered) + r")\\b", re.IGNORECASE',
+        '"|".join(f"({re.escape(t)})" for t in ordered), re.IGNORECASE',
     ),
     (
         "snippets/longest-phrase-wins",
@@ -373,11 +373,64 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "            if False:\n                return False",
     ),
     (
-        "main/transcript-saved-even-if-paste-fails",
+        "main/words-saved-before-anything-can-fail",
         "engine/__main__.py",
-        "            store.log_dictation(raw, cleaned, int(dt), audio_sec=len(samples) / 16000)\n"
-        "            if not pasted:",
-        "            if not pasted:",
+        "            row = store.log_dictation(raw, raw, 0, audio_sec=len(samples) / 16000)\n",
+        "            row = 0\n",
+    ),
+    (
+        "main/saved-row-gets-the-pasted-text",
+        "engine/__main__.py",
+        "            store.finish_dictation(row, cleaned, int(dt))\n",
+        "",
+    ),
+    (
+        "main/log-holds-lengths-not-words",
+        "engine/__main__.py",
+        "raw={len(raw)} chars pasted={len(cleaned)} chars",
+        "raw={raw!r} pasted={cleaned!r}",
+    ),
+    (
+        "polish/rejection-logged-without-text",
+        "engine/polish.py",
+        "rewrite ({len(out)} chars), using raw transcript\"",
+        "rewrite, using raw transcript: {out!r}\"",
+    ),
+    (
+        "snippets/trigger-found-by-group-not-lowercase",
+        "engine/snippets.py",
+        "usable[ordered[(m.lastindex or 1) - 1]]",
+        "usable[m.group(0).lower()]",
+    ),
+    (
+        "store/delete-rebuilds-the-file",
+        "engine/store.py",
+        '        vacuum.execute("VACUUM")\n',
+        "        pass\n",
+    ),
+    (
+        "store/delete-removes-backups",
+        "engine/store.py",
+        "        backup.unlink()\n",
+        "        pass\n",
+    ),
+    (
+        "inject/clipboard-managers-told-not-to-keep",
+        "engine/inject.py",
+        '    pb.setString_forType_("", _TRANSIENT_TYPE)\n',
+        "",
+    ),
+    (
+        "inject/clipboard-managers-told-not-to-show",
+        "engine/inject.py",
+        '    pb.setString_forType_("", _CONCEALED_TYPE)\n',
+        "",
+    ),
+    (
+        "inject/clipboard-stays-on-this-mac",
+        "engine/inject.py",
+        "    pb.prepareForNewContentsWithOptions_(_CURRENT_HOST_ONLY)  # also clears it\n",
+        "    pb.clearContents()\n",
     ),
     # ---- log hygiene ------------------------------------------------------
     (

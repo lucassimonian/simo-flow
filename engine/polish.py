@@ -276,7 +276,9 @@ def _polish_segment(raw_text: str, style_addendum: str = "", timeout: float = 30
         # (e.g. it "helpfully" answered a dictated question), paste the raw words
         # the user actually spoke, never the model's invention.
         if _is_rewrite(raw_text, out):
-            print(f"[simo] polish rejected as a rewrite, using raw transcript: {out!r}", flush=True)
+            # Lengths, not text: the log is for diagnosis and must not become a
+            # second copy of everything said, which "delete all" cannot reach.
+            print(f"[simo] polish rejected as a rewrite ({len(out)} chars), using raw transcript", flush=True)
             return raw_text
         return out or raw_text
     except Exception as e:

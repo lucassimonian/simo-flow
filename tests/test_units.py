@@ -1239,3 +1239,185 @@ def test_rapid_model_switching_never_orphans_a_server(monkeypatch):
         f"{len(alive)} whisper-servers left running out of {len(spawned)} spawned — "
         f"the extras are orphans nothing will reap"
     )
+
+
+# --------------------------------------------------------------------------
+# Words are never lost (audit, 8 October 2026)
+# --------------------------------------------------------------------------
+def _pipeline_parts(monkeypatch, tmp_path, said="the words I actually said"):
+    import engine.polish as polish_mod
+    import engine.store as store_mod
+    import engine.stt as stt_mod
+
+    monkeypatch.setattr(store_mod, "DB_PATH", tmp_path / "pipeline.db")
+    monkeypatch.setattr(stt_mod, "transcribe", lambda *a, **k: said)
+    monkeypatch.setattr(store_mod, "dictionary_prompt", lambda: "")
+    monkeypatch.setattr(polish_mod, "needs_cleanup", lambda _t: False)
+    monkeypatch.setattr(polish_mod, "polish", lambda t, *a, **k: t)
+
+    class BarePill:
+        def busy(self, stage=""):
+            pass
+
+        def flash(self, msg, hold_sec=1.6):
+            pass
+
+        def hide(self):
+            pass
+
+    class Bare:
+        exact_mode = False
+        pill = BarePill()
+
+        def _ui_title(self, _t):
+            pass
+
+    return store_mod, Bare()
+
+
+@pytest.mark.parametrize("stage", ["polish", "snippets", "paste"])
+def test_words_survive_any_failure_after_transcription(stage, monkeypatch, tmp_path):
+    """Save the result before the side effects (lesson 007), for the whole class.
+
+    The words were saved only after snippet expansion and the paste, so any
+    exception in between lost them: spoken, waited for, and gone. A refused
+    paste was guarded; a crashing one, or a crashing snippet lookup, was not.
+    """
+    import numpy as np
+
+    import engine.inject as inject_mod
+    import engine.polish as polish_mod
+    import engine.snippets as snippets_mod
+
+    store_mod, bare = _pipeline_parts(monkeypatch, tmp_path)
+
+    def boom(*_a, **_k):
+        raise RuntimeError(f"{stage} blew up")
+
+    target = {"polish": (polish_mod, "polish"), "snippets": (snippets_mod, "expand"), "paste": (inject_mod, "paste_text")}
+    monkeypatch.setattr(*target[stage], boom)
+    if stage != "paste":
+        monkeypatch.setattr(inject_mod, "paste_text", lambda *a, **k: True)
+
+    _mainmod().SimoFlow._run_pipeline(bare, np.zeros(16000, dtype=np.float32), None)
+
+    rows = store_mod.history()
+    assert len(rows) == 1, f"a crash in {stage} destroyed the transcription"
+    assert rows[0]["raw_text"] == "the words I actually said"
+
+
+def test_a_successful_dictation_is_one_row_with_the_final_text(monkeypatch, tmp_path):
+    """Saving early must not mean saving twice, or saving the wrong version."""
+    import numpy as np
+
+    import engine.inject as inject_mod
+    import engine.snippets as snippets_mod
+
+    store_mod, bare = _pipeline_parts(monkeypatch, tmp_path, said="my email please")
+    monkeypatch.setattr(snippets_mod, "expand", lambda t, _s: t.replace("my email", "me@example.invalid"))
+    monkeypatch.setattr(inject_mod, "paste_text", lambda *a, **k: True)
+
+    _mainmod().SimoFlow._run_pipeline(bare, np.zeros(16000, dtype=np.float32), None)
+
+    rows = store_mod.history()
+    assert len(rows) == 1
+    assert rows[0]["raw_text"] == "my email please"
+    assert rows[0]["polished_text"] == "me@example.invalid please"
+    assert rows[0]["duration_ms"] is not None and rows[0]["duration_ms"] >= 0
+
+
+def test_a_trigger_matches_whatever_case_was_spoken():
+    """'İ'.lower() is two characters, so looking the match up by its lowercase
+    form raised KeyError on a dictionary key that plainly existed, and the
+    pipeline lost the words with it."""
+    from engine.snippets import expand
+
+    assert expand("Go to İstanbul office", {"istanbul office": "Levent 12"}) == "Go to Levent 12"
+    assert expand("MY EMAIL please", {"my email": "me@example.invalid"}) == "me@example.invalid please"
+
+
+def test_delete_all_leaves_no_trace(monkeypatch, tmp_path):
+    """The dashboard promises delete 'removes every stored dictation from this
+    Mac'. Rows were deleted, but the text survived in the database file's free
+    pages and in every backup made by the tidy-up."""
+    import engine.store as store_mod
+
+    db = tmp_path / "trace.db"
+    monkeypatch.setattr(store_mod, "DB_PATH", db)
+    secret = "Zephyrine Quast called about the merger"
+    for _ in range(50):
+        store_mod.log_dictation(secret, secret, 100)
+    backup = store_mod._backup_db()
+    assert backup is not None and backup.exists()
+
+    assert store_mod.clear_history() == 50
+
+    assert not list(tmp_path.glob("trace.db.bak-*")), "backups of the history must go with it"
+    on_disk = b"".join(p.read_bytes() for p in tmp_path.iterdir() if p.is_file())
+    assert b"Zephyrine" not in on_disk, "deleted text is still readable in the database file"
+
+
+def test_the_log_never_receives_what_was_said(monkeypatch, tmp_path, capsys):
+    """~/.simo-flow.log is for diagnosis. Writing every transcript into it meant
+    'delete all' could never be true: up to 8MB of verbatim speech stayed behind."""
+    import numpy as np
+
+    import engine.inject as inject_mod
+
+    store_mod, bare = _pipeline_parts(monkeypatch, tmp_path, said="a very private sentence")
+    monkeypatch.setattr(inject_mod, "paste_text", lambda *a, **k: True)
+    _mainmod().SimoFlow._run_pipeline(bare, np.zeros(16000, dtype=np.float32), None)
+    out = capsys.readouterr()
+    assert "private sentence" not in out.out + out.err
+
+
+def test_a_rejected_polish_is_logged_without_its_text(monkeypatch, capsys):
+    import engine.polish as polish_mod
+
+    class Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"content": "Sure! Here is a completely different private answer."}}
+
+    monkeypatch.setattr(polish_mod.requests, "post", lambda *a, **k: Reply())
+    raw = "um so the private meeting is at noon"
+    assert polish_mod._polish_segment(raw) == raw
+    out = capsys.readouterr()
+    assert "private" not in out.out + out.err
+
+
+def test_the_clipboard_tells_clipboard_managers_not_to_keep_a_dictation(monkeypatch):
+    """Raycast, Maccy and Paste save everything that crosses the pasteboard, so
+    every dictation was kept for good by them. The nspasteboard.org marker types
+    are the convention they honour; current-host-only keeps it off other devices."""
+    import engine.inject as inject_mod
+
+    calls: list[tuple] = []
+
+    class Board:
+        def prepareForNewContentsWithOptions_(self, opts):
+            calls.append(("prepare", opts))
+            return 1
+
+        def clearContents(self):
+            calls.append(("clear",))
+
+        def setString_forType_(self, s, t):
+            calls.append(("set", t, s))
+            return True
+
+    class Pasteboard:
+        @staticmethod
+        def generalPasteboard():
+            return Board()
+
+    monkeypatch.setattr(inject_mod, "NSPasteboard", Pasteboard)
+    inject_mod._set_clipboard("dictated text")
+
+    types = [c[1] for c in calls if c[0] == "set"]
+    assert ("prepare", 1) in calls, "current-host-only, so it is not offered to the iPhone"
+    assert "org.nspasteboard.TransientType" in types
+    assert "org.nspasteboard.ConcealedType" in types
+    assert ("set", inject_mod.NSPasteboardTypeString, "dictated text") in calls

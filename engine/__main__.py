@@ -422,6 +422,11 @@ class SimoFlow(rumps.App):
                 self.pill.flash("no speech detected")
                 self._ui_title(IDLE_TITLE)
                 return
+            # Saved the moment the words exist, before anything that can fail
+            # (lesson 007). Saving after the paste meant a crash in polish, a
+            # snippet lookup or the paste itself lost what was said; only a
+            # refused paste had been covered. The row is completed below.
+            row = store.log_dictation(raw, raw, 0, audio_sec=len(samples) / 16000)
             if self.exact_mode:
                 cleaned = raw
             else:
@@ -444,18 +449,14 @@ class SimoFlow(rumps.App):
                 cleaned, focus=focus, on_pasted=lambda: seen_at.append(time.time())
             )
             dt = ((seen_at[0] if seen_at else time.time()) - t0) * 1000
-            # Recorded even when the paste failed. Returning early here used to
-            # skip this, so a refused paste (revoked Accessibility, target app
-            # gone) destroyed the transcription outright — the user had spoken,
-            # waited, and got nothing, with no copy anywhere. Saved, it is still
-            # recoverable from the dashboard.
-            store.log_dictation(raw, cleaned, int(dt), audio_sec=len(samples) / 16000)
+            store.finish_dictation(row, cleaned, int(dt))
             if not pasted:
                 # inject already logged the specific reason.
                 self.pill.flash("couldn't paste — saved to dashboard")
                 self._ui_title(IDLE_TITLE)
                 return
-            print(f"[simo] {dt:.0f}ms exact={self.exact_mode} raw={raw!r} pasted={cleaned!r}", flush=True)
+            # Lengths, not text: see invariant 10 in AGENTS.md.
+            print(f"[simo] {dt:.0f}ms exact={self.exact_mode} raw={len(raw)} chars pasted={len(cleaned)} chars", flush=True)
             self.pill.hide()
         except Exception as e:  # never crash the app on one bad utterance
             print(f"[simo] pipeline error: {e}", flush=True)
