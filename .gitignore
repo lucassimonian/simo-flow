@@ -14,3 +14,6 @@ tests/*.aiff
 # machine-specific state and half-formed plans — none of which belong in a repo
 # strangers read.
 docs/ROADMAP.md
+
+# written by tools/mutation_sweep.py while a mutation is live
+.mutation-sweep-journal.json

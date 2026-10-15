@@ -19,11 +19,97 @@ Usage:
     ./.venv/bin/python tools/mutation_sweep.py --only inject
 """
 import argparse
+import atexit
+import json
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# ── Putting the source back, even when this process is killed ──────────────
+# The sweep rewrites real source files and restores them in a `finally`. That
+# covers an exception; it does not cover SIGTERM, which is what a timeout or a
+# `kill` sends — the process simply dies mid-mutation and the tree is left
+# sabotaged. That happened twice on 2026-10-15, once leaving the pasteboard
+# guard in engine/inject.py replaced by `if False:` — the guard whose whole job
+# is not destroying something the user just copied.
+#
+# Three layers, because the failure is silent and the cost is a broken app:
+#   1. finally      — normal completion and exceptions
+#   2. signal+atexit— SIGTERM / SIGINT / sys.exit
+#   3. a journal    — SIGKILL cannot be caught at all, so the next run reads
+#                     the journal and puts the files back before doing anything
+JOURNAL = ROOT / ".mutation-sweep-journal.json"
+_LIVE: dict[str, str] = {}  # relpath -> original text, for whatever is mutated now
+
+
+def _begin(relpath: str, original: str) -> None:
+    _LIVE[relpath] = original
+    try:
+        JOURNAL.write_text(json.dumps(_LIVE))
+    except OSError:
+        pass  # the journal is the third net, not the first; never block on it
+
+
+def _end(relpath: str) -> None:
+    _LIVE.pop(relpath, None)
+    try:
+        if _LIVE:
+            JOURNAL.write_text(json.dumps(_LIVE))
+        elif JOURNAL.exists():
+            JOURNAL.unlink()
+    except OSError:
+        pass
+
+
+def _restore_live() -> None:
+    for relpath, original in list(_LIVE.items()):
+        try:
+            (ROOT / relpath).write_text(original)
+        except OSError:
+            print(f"!! could not restore {relpath} — run: git checkout -- {relpath}",
+                  file=sys.stderr)
+        _LIVE.pop(relpath, None)
+    try:
+        if JOURNAL.exists():
+            JOURNAL.unlink()
+    except OSError:
+        pass
+
+
+def _on_signal(signum, _frame):
+    print(f"\n!! interrupted (signal {signum}) — restoring source before exit",
+          file=sys.stderr)
+    _restore_live()
+    os._exit(130)
+
+
+def recover_from_journal() -> None:
+    """A previous run was SIGKILLed mid-mutation. Put its files back first."""
+    if not JOURNAL.exists():
+        return
+    try:
+        stale = json.loads(JOURNAL.read_text())
+    except (OSError, ValueError):
+        JOURNAL.unlink(missing_ok=True)
+        return
+    for relpath, original in stale.items():
+        path = ROOT / relpath
+        if path.exists() and path.read_text() != original:
+            path.write_text(original)
+            print(f"recovered {relpath} from an interrupted sweep")
+    JOURNAL.unlink(missing_ok=True)
+
+
+atexit.register(_restore_live)
+for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    try:
+        signal.signal(_sig, _on_signal)
+    except (ValueError, OSError):
+        pass  # not the main thread, or the platform lacks it
 
 # (label, file, exact source to replace, replacement) — each disables one guard.
 MUTATIONS: list[tuple[str, str, str, str]] = [
@@ -541,6 +627,8 @@ def main() -> int:
         print(problem)
         return 2
 
+    recover_from_journal()
+
     if not run_suite(explain=True):
         print("The suite is already failing — fix that before mutating anything.")
         return 2
@@ -554,6 +642,7 @@ def main() -> int:
             print(f"  ??  {label}  (source not found — mutation is out of date)")
             continue
         try:
+            _begin(relpath, original)
             path.write_text(original.replace(old, new, 1))
             if run_suite():
                 survivors.append(label)
@@ -563,6 +652,7 @@ def main() -> int:
                 print(f"  ok  {label}")
         finally:
             path.write_text(original)
+            _end(relpath)
 
     # Belt and braces: prove we put every file back exactly as we found it.
     left_behind = sorted({relpath for _l, relpath, _o, _n in muts} & set(_dirty_files()))
