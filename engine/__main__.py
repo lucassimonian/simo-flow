@@ -204,21 +204,28 @@ class SimoFlow(rumps.App):
     def _quit(self, _item) -> None:
         """Tear down child process and mic stream, then terminate."""
         print("[simo] quitting — stopping whisper-server and mic stream", flush=True)
+        # Each teardown below swallows everything on purpose, and the reason is
+        # the same for all three: this runs on the way out, every step is
+        # independent, and a failure in one must not prevent the next. Raising
+        # here would leave the event tap attached or whisper-server orphaned,
+        # which is strictly worse than an unreported error during quit. The
+        # failures are not silent in the sense that matters — the process is
+        # ending, so there is no later behaviour for them to corrupt.
         try:
             # Release the event tap before anything slower. Leaving a filtering tap
             # attached while the process winds down means every keystroke on the
             # machine is still routed through an app that is going away.
             self.listener.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[simo] quit: event tap would not stop ({e})", flush=True)
         try:
             stt.stop_server()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[simo] quit: whisper-server would not stop ({e})", flush=True)
         try:
             self.recorder.stop_stream()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[simo] quit: mic stream would not close ({e})", flush=True)
         rumps.quit_application()
 
     # ---- mode submenu (Clean / Exact) --------------------------------
@@ -393,6 +400,15 @@ class SimoFlow(rumps.App):
         if samples is None:
             # Don't paste silence; tell the user why nothing happened.
             reason = self.recorder.reject_reason or "nothing captured"
+            # Logged, not just shown. The pill message vanishes in a second and
+            # the log then held no trace of it, so a report of "it didn't work"
+            # had nothing behind it to read (lessons.md 024). Every refusal now
+            # leaves a line naming what the user was told and which mic it was.
+            print(
+                f"[simo] dictation refused: {reason} "
+                f"(device={audio.default_input_name()})",
+                flush=True,
+            )
             if reason != "too short":  # a stray tap isn't worth a message
                 self.pill.flash(reason)
             else:
