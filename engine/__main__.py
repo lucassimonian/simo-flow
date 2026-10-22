@@ -601,6 +601,35 @@ def _harden_boot_log() -> None:
         pass  # a boot log we can't chmod must not stop the app starting
 
 
+class _Tee:
+    """Write to the real stream and the log file at once.
+
+    Lifted out of _tee_logs() so that function reads as the six decisions it
+    makes rather than as a class definition with setup wrapped around it.
+    """
+
+    def __init__(self, real, *extra):
+        self._real = real  # the genuine stream (may be None under launchd)
+        self._streams = [s for s in (real, *extra) if s is not None]
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+    def __getattr__(self, name):
+        # isatty/fileno/encoding/etc. — libraries like uvicorn probe these.
+        # Delegate to the real stream, or a sane default if there isn't one.
+        if self._real is not None:
+            return getattr(self._real, name)
+        if name == "isatty":
+            return lambda: False
+        raise AttributeError(name)
+
+
 def _tee_logs() -> None:
     """Mirror stdout/stderr to ~/.simo-flow.log so failures survive a closed
     terminal (or a .app launch with no terminal at all). The log holds plaintext
@@ -628,28 +657,6 @@ def _tee_logs() -> None:
         print("[simo] launchd already logs to this file — run ./simo install to "
               "stop every line being recorded twice", file=sys.__stdout__, flush=True)
         return
-
-    class _Tee:
-        def __init__(self, real, *extra):
-            self._real = real  # the genuine stream (may be None under launchd)
-            self._streams = [s for s in (real, *extra) if s is not None]
-
-        def write(self, data):
-            for s in self._streams:
-                s.write(data)
-
-        def flush(self):
-            for s in self._streams:
-                s.flush()
-
-        def __getattr__(self, name):
-            # isatty/fileno/encoding/etc. — libraries like uvicorn probe these.
-            # Delegate to the real stream, or a sane default if there isn't one.
-            if self._real is not None:
-                return getattr(self._real, name)
-            if name == "isatty":
-                return lambda: False
-            raise AttributeError(name)
 
     # A redirected (file-backed) stream is launchd's boot log, and must NOT stay a
     # sink: every pipeline line carries the raw and cleaned transcript, so keeping

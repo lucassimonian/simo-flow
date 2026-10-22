@@ -25,6 +25,23 @@ be loud.
 
 Every row names a command. A row without one is an aspiration, not a constraint.
 
+## Function length
+
+The bar is **30 lines of code**, not 30 lines of file. Four functions exceed 50
+lines in total and all four are under 30 lines of code; the remainder is
+docstring and comments recording real incidents — the v2.2.1 freeze, eleven
+consecutive failed opens, the world-readable boot log. Splitting them would
+separate each comment from the code it explains.
+
+| Function | Total | Code | Verdict |
+|---|---|---|---|
+| `inject.py:paste_text` | 69 | 30 | split once on 2026-10-22 (97 → 69); the rest is contract |
+| `audio.py:end` | 52 | 30 | keep — a linear rejection ladder, each step commented |
+| `audio.py:_prepare_device` | 55 | 25 | keep — open, retry, give up; the retry is meaningless alone |
+| `__main__.py:_tee_logs` | 39 | 12 | split on 2026-10-22; `_Tee` lifted to module level |
+
+Measured with `ast`, 2026-10-22. Re-measure before claiming any of these grew.
+
 ## Measured, not yet enforced
 
 | What | Today | Direction |
