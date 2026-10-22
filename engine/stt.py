@@ -76,7 +76,14 @@ def _kill_port(port: int) -> None:
         out = subprocess.run(
             ["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True, timeout=3
         ).stdout
-    except Exception:
+    except Exception as e:
+        # lsof missing, or it timed out on a busy machine. Returning means we
+        # skip the reap and let the bind below fail with its own clear error,
+        # which is a better message than anything we could raise from here.
+        # Logged rather than swallowed: a port that stays held is the exact
+        # symptom this function exists to prevent, so its failure must be
+        # findable in the log afterwards.
+        print(f"[simo] could not check port {port} for an orphan ({e})", flush=True)
         return
     for pid in out.split():
         try:

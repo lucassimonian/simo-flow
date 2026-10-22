@@ -204,21 +204,28 @@ class SimoFlow(rumps.App):
     def _quit(self, _item) -> None:
         """Tear down child process and mic stream, then terminate."""
         print("[simo] quitting — stopping whisper-server and mic stream", flush=True)
+        # Each teardown below swallows everything on purpose, and the reason is
+        # the same for all three: this runs on the way out, every step is
+        # independent, and a failure in one must not prevent the next. Raising
+        # here would leave the event tap attached or whisper-server orphaned,
+        # which is strictly worse than an unreported error during quit. The
+        # failures are not silent in the sense that matters — the process is
+        # ending, so there is no later behaviour for them to corrupt.
         try:
             # Release the event tap before anything slower. Leaving a filtering tap
             # attached while the process winds down means every keystroke on the
             # machine is still routed through an app that is going away.
             self.listener.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[simo] quit: event tap would not stop ({e})", flush=True)
         try:
             stt.stop_server()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[simo] quit: whisper-server would not stop ({e})", flush=True)
         try:
             self.recorder.stop_stream()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[simo] quit: mic stream would not close ({e})", flush=True)
         rumps.quit_application()
 
     # ---- mode submenu (Clean / Exact) --------------------------------
@@ -393,6 +400,15 @@ class SimoFlow(rumps.App):
         if samples is None:
             # Don't paste silence; tell the user why nothing happened.
             reason = self.recorder.reject_reason or "nothing captured"
+            # Logged, not just shown. The pill message vanishes in a second and
+            # the log then held no trace of it, so a report of "it didn't work"
+            # had nothing behind it to read (lessons.md 024). Every refusal now
+            # leaves a line naming what the user was told and which mic it was.
+            print(
+                f"[simo] dictation refused: {reason} "
+                f"(device={audio.default_input_name()})",
+                flush=True,
+            )
             if reason != "too short":  # a stray tap isn't worth a message
                 self.pill.flash(reason)
             else:
@@ -585,6 +601,35 @@ def _harden_boot_log() -> None:
         pass  # a boot log we can't chmod must not stop the app starting
 
 
+class _Tee:
+    """Write to the real stream and the log file at once.
+
+    Lifted out of _tee_logs() so that function reads as the six decisions it
+    makes rather than as a class definition with setup wrapped around it.
+    """
+
+    def __init__(self, real, *extra):
+        self._real = real  # the genuine stream (may be None under launchd)
+        self._streams = [s for s in (real, *extra) if s is not None]
+
+    def write(self, data) -> None:
+        for s in self._streams:
+            s.write(data)
+
+    def flush(self) -> None:
+        for s in self._streams:
+            s.flush()
+
+    def __getattr__(self, name):
+        # isatty/fileno/encoding/etc. — libraries like uvicorn probe these.
+        # Delegate to the real stream, or a sane default if there isn't one.
+        if self._real is not None:
+            return getattr(self._real, name)
+        if name == "isatty":
+            return lambda: False
+        raise AttributeError(name)
+
+
 def _tee_logs() -> None:
     """Mirror stdout/stderr to ~/.simo-flow.log so failures survive a closed
     terminal (or a .app launch with no terminal at all). The log holds plaintext
@@ -612,28 +657,6 @@ def _tee_logs() -> None:
         print("[simo] launchd already logs to this file — run ./simo install to "
               "stop every line being recorded twice", file=sys.__stdout__, flush=True)
         return
-
-    class _Tee:
-        def __init__(self, real, *extra):
-            self._real = real  # the genuine stream (may be None under launchd)
-            self._streams = [s for s in (real, *extra) if s is not None]
-
-        def write(self, data):
-            for s in self._streams:
-                s.write(data)
-
-        def flush(self):
-            for s in self._streams:
-                s.flush()
-
-        def __getattr__(self, name):
-            # isatty/fileno/encoding/etc. — libraries like uvicorn probe these.
-            # Delegate to the real stream, or a sane default if there isn't one.
-            if self._real is not None:
-                return getattr(self._real, name)
-            if name == "isatty":
-                return lambda: False
-            raise AttributeError(name)
 
     # A redirected (file-backed) stream is launchd's boot log, and must NOT stay a
     # sink: every pipeline line carries the raw and cleaned transcript, so keeping
@@ -678,7 +701,12 @@ def main() -> None:
     _install_shutdown_hooks()
     app = SimoFlow()
     # boot after the runloop starts so the event tap attaches to the right loop
-    rumps.Timer(lambda t: (t.stop(), app.boot()), 0.5).start()
+    def _boot_once(timer: "rumps.Timer") -> None:
+        """Fire boot() a single time, then retire the timer that called it."""
+        timer.stop()
+        app.boot()
+
+    rumps.Timer(_boot_once, 0.5).start()
     app.run()
 
 

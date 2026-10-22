@@ -61,11 +61,38 @@ def _load_coreaudio():
         fourcc = lambda s: int.from_bytes(s.encode(), "big")  # noqa: E731
         # kAudioHardwarePropertyDefaultInputDevice / kAudioObjectPropertyScopeGlobal
         return lib, _Address(fourcc("dIn "), fourcc("glob"), 0), ctypes
-    except Exception:
+    except Exception as e:
+        # Swallowed deliberately and not logged at module import: every caller
+        # already handles _COREAUDIO being None by falling back to PortAudio's
+        # view of the device. A machine without this framework is a supported
+        # state, not a failure, and a line printed here would appear on every
+        # launch for a condition nobody can act on. The loss is visible where it
+        # matters — default_input_device() returns None and its callers say so.
+        print(f"[simo] CoreAudio unavailable ({e}) — using PortAudio's device view", flush=True)
         return None
 
 
 _COREAUDIO = _load_coreaudio()
+
+
+def default_input_name() -> str:
+    """The name of the input device PortAudio would use, for the log.
+
+    Lessons.md 024: a report of "dictation is broken" had no record of which
+    microphone was in use, so the cause was guessed at and guessed wrong. A
+    name is readable a week later; a device id is not.
+
+    Deliberately PortAudio's view rather than CoreAudio's: the failures this
+    exists to explain are PortAudio failures, so its idea of the device is the
+    one worth recording. Never raises — a log helper must not break a dictation.
+    """
+    try:
+        return str(sd.query_devices(kind="input")["name"])
+    except Exception:
+        # "unknown" rather than raising: this exists only to label a log line,
+        # and a log helper that can break a dictation is worse than one that
+        # occasionally cannot name the device.
+        return "unknown"
 
 
 def default_input_device() -> int | None:
@@ -90,6 +117,10 @@ def default_input_device() -> int | None:
         )
         return dev.value if err == 0 else None
     except Exception:
+        # Returning None is the documented answer for "cannot tell", which is
+        # exactly what an exception here means. Callers treat None as "no
+        # opinion" and carry on with PortAudio's device, so there is no state
+        # to corrupt and nothing for the user to act on.
         return None
 
 
@@ -297,6 +328,11 @@ class Recorder:
             print("[simo] mic recovered after re-initialising PortAudio", flush=True)
             return
 
+        print(
+            "[simo] mic still unavailable after re-initialising PortAudio — this "
+            "press captured nothing",
+            flush=True,
+        )
         self._needs_reinit = True  # next press starts from a clean device list
         with self._lock:
             if generation != self._generation:
@@ -336,7 +372,10 @@ class Recorder:
                 self._stream.start()
             return True
         except Exception as e:
-            print(f"[simo] mic open failed: {e}", flush=True)
+            print(
+                f"[simo] mic open failed on {default_input_name()}: {e}",
+                flush=True,
+            )
             self._stream = None
             return False
 
@@ -349,7 +388,13 @@ class Recorder:
                     self._stream.stop()
                     self._stream.close()
             except Exception:
-                pass  # already gone
+                # Everything is caught on purpose. This runs on the teardown
+                # path, where every realistic failure means the stream is
+                # already gone — closed by a device change, or by CoreAudio
+                # itself. Raising would leave self._stream set and the recorder
+                # permanently unable to open a new one, which is strictly worse
+                # than an unreported close. Nothing downstream reads the result.
+                pass
             self._stream = None
         self.level = 0.0
 

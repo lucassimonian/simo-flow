@@ -45,6 +45,8 @@ echo "verify-changes — simo-flow"
 echo "python: $($PY --version 2>&1)"
 
 run_gate "lint (ruff)"        $PY -m ruff check .
+run_gate "types (mypy)"       $PY -m mypy engine/ --ignore-missing-imports
+run_gate "soak harness tests"  $PY tools/test_mic_soak.py
 run_gate "tests (pytest)"     $PY -m pytest tests/ --ignore=tests/test_pipeline.py -q -p no:warnings
 if [ "$FAST" -eq 1 ]; then
   printf '\n·  mutation sweep skipped (--fast). Run without --fast before a release.\n'

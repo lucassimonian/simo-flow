@@ -413,6 +413,57 @@ def capture_focus() -> dict | None:
     return _capture_focus()
 
 
+def _return_to_origin(focus: dict) -> bool:
+    """Bring the window the user was in back to the front. False if it refused.
+
+    Done before any clipboard write, so a refusal — the target app quit, trust
+    revoked mid-flight — costs the user nothing.
+    """
+    if not _activate_pid(focus["pid"]):
+        print(
+            f"[simo] paste aborted — could not activate {_describe(focus)} "
+            "(did the app quit during transcription?); clipboard untouched",
+            flush=True,
+        )
+        return False
+    # Continue the instant the app is genuinely frontmost, rather than after a
+    # fixed guess. Pasting before focus lands sends Cmd+V to the wrong window —
+    # the bug this whole path exists to prevent.
+    if not _wait_until(lambda: _same_app(_capture_focus(), focus), ACTIVATE_DELAY):
+        print(
+            f"[simo] paste aborted — {_describe(focus)} did not come to the "
+            f"foreground within {ACTIVATE_DELAY * 1000:.0f}ms; clipboard untouched",
+            flush=True,
+        )
+        return False
+    return True
+
+
+def _restore_clipboard(previous: list | None, expected: int) -> None:
+    """Put the user's clipboard back, or get ours off it. Never raises.
+
+    `expected` is the change count immediately after our own write, so anything
+    higher means someone else has written since.
+    """
+    time.sleep(RESTORE_DELAY)
+    if _change_count() != expected:
+        # Someone — almost always the user's own Cmd+C — wrote to the
+        # pasteboard inside our window. Their copy is newer than our
+        # snapshot, so restoring would destroy it.
+        print("[simo] clipboard changed during paste — leaving it alone", flush=True)
+        return
+    if previous:
+        # Never leave our dictation on the pasteboard: if putting the user's
+        # content back fails, an empty clipboard is the lesser harm — a
+        # clipboard-history tool would otherwise capture the transcript.
+        if not _restore_pasteboard(previous):
+            print("[simo] could not restore the clipboard — clearing it", flush=True)
+            _clear_clipboard()
+        return
+    # Empty before, or too large to snapshot. Either way ours must not stay.
+    _clear_clipboard()
+
+
 def paste_text(
     text: str,
     focus: dict | None = None,
@@ -430,6 +481,9 @@ def paste_text(
     wait. That is the moment the user actually sees their text, and it is the only
     honest thing to call the latency: timing the whole call instead adds ~300ms of
     post-paste clipboard housekeeping the user never waits for.
+
+    Four steps, in this order, each of which can refuse without side effects:
+    guard, return to the user's window, paste, put the clipboard back.
     """
     if not text:
         return False
@@ -445,25 +499,8 @@ def paste_text(
         )
         return False
 
-    # Return to the window the user was in. Done before any clipboard write, so a
-    # refusal (target app quit, trust revoked mid-flight) costs them nothing.
     if focus and focus.get("pid") and not _same_app(_capture_focus(), focus):
-        if not _activate_pid(focus["pid"]):
-            print(
-                f"[simo] paste aborted — could not activate {_describe(focus)} "
-                "(did the app quit during transcription?); clipboard untouched",
-                flush=True,
-            )
-            return False
-        # Continue the instant the app is genuinely frontmost, rather than after a
-        # fixed guess. Pasting before focus lands sends Cmd+V to the wrong window —
-        # the bug this whole path exists to prevent.
-        if not _wait_until(lambda: _same_app(_capture_focus(), focus), ACTIVATE_DELAY):
-            print(
-                f"[simo] paste aborted — {_describe(focus)} did not come to the "
-                f"foreground within {ACTIVATE_DELAY * 1000:.0f}ms; clipboard untouched",
-                flush=True,
-            )
+        if not _return_to_origin(focus):
             return False
 
     # Snapshot every representation rather than reading the clipboard as a string:
@@ -479,27 +516,22 @@ def paste_text(
     # original 50ms sleep here was cargo — and the condition-poll that briefly
     # replaced it was provably true on its first check, every time.)
     expected = _change_count()
+    # Lengths and counts only, never the text (invariant 10). Lucas, 2026-10-22:
+    # a failed dictation followed by a second press sometimes pasted something
+    # he had copied earlier. Nothing in the log could confirm or refute that,
+    # because nothing recorded which pasteboard generation Cmd+V actually hit.
+    print(
+        f"[simo] paste: {len(text)} chars onto pasteboard, "
+        f"had {len(previous) if previous else 0} item(s) before, "
+        f"change count now {expected}",
+        flush=True,
+    )
     _press_cmd_v()
     if on_pasted is not None:
         on_pasted()  # the text is on screen now; everything below is cleanup
 
     if restore:
-        time.sleep(RESTORE_DELAY)
-        if _change_count() != expected:
-            # Someone — almost always the user's own Cmd+C — wrote to the
-            # pasteboard inside our window. Their copy is newer than our
-            # snapshot, so restoring would destroy it.
-            print("[simo] clipboard changed during paste — leaving it alone", flush=True)
-        elif previous:
-            # Never leave our dictation on the pasteboard: if putting the user's
-            # content back fails, an empty clipboard is the lesser harm — a
-            # clipboard-history tool would otherwise capture the transcript.
-            if not _restore_pasteboard(previous):
-                print("[simo] could not restore the clipboard — clearing it", flush=True)
-                _clear_clipboard()
-        else:
-            # Empty before, or too large to snapshot. Either way ours must not stay.
-            _clear_clipboard()
+        _restore_clipboard(previous, expected)
     return True
 
 

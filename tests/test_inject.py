@@ -180,6 +180,19 @@ def test_paste_sends_cmd_down_v_down_v_up_cmd_up(mac):
     assert flags[3] == 0, "Cmd key-up must clear the modifier or it stays stuck"
 
 
+def test_an_empty_transcript_never_sends_cmd_v(mac):
+    """Cmd+V with nothing written pastes whatever the app last held.
+
+    Lucas, 2026-10-22: a dictation that produced nothing, followed by a second
+    press, sometimes pasted text he had copied earlier. paste_text already
+    refuses an empty string, and this pins that behaviour so it cannot be
+    removed later — but note it also *rules out* the empty-transcript theory
+    for that bug: the keystroke was never being sent in the first place.
+    """
+    assert mac.inject.paste_text("") is False
+    assert mac.keys == [], "no keystroke may be sent when there is nothing to paste"
+
+
 # --------------------------------------------------------------------------
 # 2. Clipboard guard
 # --------------------------------------------------------------------------
