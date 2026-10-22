@@ -10,3 +10,12 @@ requests==2.34.2
 rumps==0.4.0
 sounddevice==0.5.5
 uvicorn==0.51.0
+
+# Transitive, pinned explicitly because they carry advisories and nothing else
+# here pins them. requests and httpx are already at their latest releases, so
+# the old versions came from leaving these to resolve freely — which is exactly
+# what "pinned for reproducible clone-and-run" is supposed to prevent.
+# pip-audit --strict gates this in CI; raise these when it next fails.
+anyio==4.14.2      # PYSEC-2026-4023, PYSEC-2026-4024
+certifi==2026.10.19  # PYSEC-2026-4320
+urllib3==2.8.0     # PYSEC-2026-4175/4176/4177
