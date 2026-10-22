@@ -19,6 +19,7 @@ be loud.
 | What | Rule | Proven by | Runs |
 |---|---|---|---|
 | Lint | Zero errors | `ruff check .` | every change |
+| Types | Zero errors across 11 files | `mypy engine/ --ignore-missing-imports` | every change |
 | Tests | , zero failures | `pytest tests/ --ignore=tests/test_pipeline.py` | every change |
 | Guards are real | **64 of 64** safety guards fail a test when broken | `tools/mutation_sweep.py` | before a release, and CI |
 | Nothing destroys a user's clipboard | The pasteboard guard in `engine/inject.py` stays live | covered by the sweep above | every change |
@@ -47,6 +48,7 @@ Measured with `ast`, 2026-10-22. Re-measure before claiming any of these grew.
 | What | Today | Direction |
 |---|---|---|
 | Line coverage | **not measured** (`pytest-cov` is not installed) | install it, record the number, then it must not fall |
+| Microphone open failure rate | **not measured** — run `tools/mic_soak.py` when away from the Mac | record it, then it must not get worse |
 | Time to the cursor | 570 ms accurate tier, 110 ms fast tier | must not grow |
 
 ## How this is enforced

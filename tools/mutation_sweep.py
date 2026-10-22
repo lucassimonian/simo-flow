@@ -154,7 +154,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "inject/clipboard-changecount-guard",
         "engine/inject.py",
-        "        if _change_count() != expected:",
+        "    if _change_count() != expected:",
         "        if False:",
     ),
     (
@@ -172,7 +172,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "inject/abort-if-focus-never-arrives",
         "engine/inject.py",
-        "        if not _wait_until(lambda: _same_app(_capture_focus(), focus), ACTIVATE_DELAY):",
+        "    if not _wait_until(lambda: _same_app(_capture_focus(), focus), ACTIVATE_DELAY):",
         "        if False:",
     ),
     (

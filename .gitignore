@@ -17,3 +17,4 @@ docs/ROADMAP.md
 
 # written by tools/mutation_sweep.py while a mutation is live
 .mutation-sweep-journal.json
+mic-soak-results.json
