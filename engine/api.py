@@ -75,18 +75,18 @@ def _reject_cross_origin(request: Request) -> None:
 
 
 @app.get("/")
-def index():
+def index() -> FileResponse:
     # no-store so an updated dashboard is never masked by a stale browser cache
     return FileResponse(STATIC / "dashboard.html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/history")
-def api_history(q: str = "", limit: int = 100):
+def api_history(q: str = "", limit: int = 100) -> list[dict]:
     return store.history(limit=min(limit, 500), q=q)
 
 
 @app.get("/api/history/export")
-def api_history_export(request: Request):
+def api_history_export(request: Request) -> list[dict]:
     """Everything, including the raw transcripts — your data, takeable elsewhere.
     Paired with DELETE below: a store of everything you have ever said needs both
     an exit and an off switch, or the privacy promise is only a claim.
@@ -101,31 +101,31 @@ def api_history_export(request: Request):
 
 
 @app.delete("/api/history")
-def api_history_clear(request: Request):
+def api_history_clear(request: Request) -> dict[str, int]:
     _reject_cross_origin(request)
     return {"deleted": store.clear_history()}
 
 
 @app.get("/api/history/needs-flatten")
-def api_history_needs_flatten():
+def api_history_needs_flatten() -> dict[str, int]:
     """How many stored dictations still carry the speech engine's line wrapping.
     A count of rows, revealing none of their content, so it needs no origin guard."""
     return {"count": store.history_needing_flatten()}
 
 
 @app.post("/api/history/flatten")
-def api_history_flatten(request: Request):
+def api_history_flatten(request: Request) -> dict[str, int]:
     _reject_cross_origin(request)
     return {"updated": store.flatten_history()}
 
 
 @app.get("/api/insights")
-def api_insights():
+def api_insights() -> dict:
     return store.insights()
 
 
 @app.get("/api/dictionary")
-def api_dictionary():
+def api_dictionary() -> list[dict]:
     return store.dictionary_terms()
 
 
@@ -134,14 +134,14 @@ class Term(BaseModel):
 
 
 @app.post("/api/dictionary")
-def api_dictionary_add(t: Term, request: Request):
+def api_dictionary_add(t: Term, request: Request) -> list[dict]:
     _reject_cross_origin(request)
     store.dictionary_add(t.term)
     return store.dictionary_terms()
 
 
 @app.get("/api/snippets")
-def api_snippets():
+def api_snippets() -> list[dict]:
     return store.snippets()
 
 
@@ -151,7 +151,7 @@ class Snippet(BaseModel):
 
 
 @app.post("/api/snippets")
-def api_snippet_add(s: Snippet, request: Request):
+def api_snippet_add(s: Snippet, request: Request) -> list[dict]:
     _reject_cross_origin(request)
     if not store.snippet_add(s.phrase, s.expansion):
         raise HTTPException(
@@ -163,14 +163,14 @@ def api_snippet_add(s: Snippet, request: Request):
 
 
 @app.delete("/api/snippets/{snippet_id}")
-def api_snippet_delete(snippet_id: int, request: Request):
+def api_snippet_delete(snippet_id: int, request: Request) -> list[dict]:
     _reject_cross_origin(request)
     store.snippet_delete(snippet_id)
     return store.snippets()
 
 
 @app.delete("/api/dictionary/{term_id}")
-def api_dictionary_delete(term_id: int, request: Request):
+def api_dictionary_delete(term_id: int, request: Request) -> list[dict]:
     _reject_cross_origin(request)
     store.dictionary_delete(term_id)
     return store.dictionary_terms()

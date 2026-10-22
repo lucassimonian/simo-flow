@@ -67,31 +67,31 @@ class _WaveformView(NSView):
     """Custom-drawn scrolling waveform: each bar is one recent level sample,
     grown symmetrically from the vertical centre like a real audio meter."""
 
-    def initWithFrame_(self, frame):
+    def initWithFrame_(self, frame) -> "_WaveformView":
         self = objc.super(_WaveformView, self).initWithFrame_(frame)
         if self is not None:
             self._levels = deque([0.0] * N_BARS, maxlen=N_BARS)
             self._msg = None  # when set, draw text instead of bars
         return self
 
-    def isFlipped(self):
+    def isFlipped(self) -> bool:
         return False
 
-    def push_(self, level):
+    def push_(self, level) -> None:
         self._msg = None
         self._levels.append(float(level))
         self.setNeedsDisplay_(True)
 
-    def setLevels_(self, values):
+    def setLevels_(self, values) -> None:
         self._msg = None
         self._levels = deque(values, maxlen=N_BARS)
         self.setNeedsDisplay_(True)
 
-    def showMessage_(self, text):
+    def showMessage_(self, text) -> None:
         self._msg = text
         self.setNeedsDisplay_(True)
 
-    def drawRect_(self, rect):
+    def drawRect_(self, rect) -> None:
         b = self.bounds()
         if self._msg is not None:
             self._draw_message(b)
@@ -126,11 +126,11 @@ class _WaveformView(NSView):
 class _PillTarget(NSObject):
     """Objective-C action target bridging button clicks to python callbacks."""
 
-    def cancelPressed_(self, sender):
+    def cancelPressed_(self, sender) -> None:
         if getattr(self, "on_cancel", None):
             self.on_cancel()
 
-    def commitPressed_(self, sender):
+    def commitPressed_(self, sender) -> None:
         if getattr(self, "on_commit", None):
             self.on_commit()
 

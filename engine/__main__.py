@@ -612,11 +612,11 @@ class _Tee:
         self._real = real  # the genuine stream (may be None under launchd)
         self._streams = [s for s in (real, *extra) if s is not None]
 
-    def write(self, data):
+    def write(self, data) -> None:
         for s in self._streams:
             s.write(data)
 
-    def flush(self):
+    def flush(self) -> None:
         for s in self._streams:
             s.flush()
 
@@ -701,7 +701,12 @@ def main() -> None:
     _install_shutdown_hooks()
     app = SimoFlow()
     # boot after the runloop starts so the event tap attaches to the right loop
-    rumps.Timer(lambda t: (t.stop(), app.boot()), 0.5).start()
+    def _boot_once(timer: "rumps.Timer") -> None:
+        """Fire boot() a single time, then retire the timer that called it."""
+        timer.stop()
+        app.boot()
+
+    rumps.Timer(_boot_once, 0.5).start()
     app.run()
 
 
