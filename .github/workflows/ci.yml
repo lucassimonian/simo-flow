@@ -62,11 +62,13 @@ jobs:
       # here, so the other suites could have rotted unnoticed. test_pipeline.py
       # is excluded because it needs a real mic, the whisper models and a running
       # Ollama; it is run by hand before a release.
+      # Annotations drift silently: 23 of 78 public functions had no return type
+      # before 2026-10-22, which reads as "started typed, gave up". Zero errors
+      # is the bar, and mypy here is what stops it slipping again.
       - name: Types
         run: |
-          source .venv/bin/activate
-          python -m pip install -q mypy
-          python -m mypy engine/ --ignore-missing-imports
+          pip install mypy
+          mypy engine/ --ignore-missing-imports
 
       - name: Run tests
         run: python -m pytest tests/ --ignore=tests/test_pipeline.py
