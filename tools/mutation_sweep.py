@@ -324,8 +324,28 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "audio/distinguish-unopenable-mic-from-silence",
         "engine/audio.py",
-        '                "microphone unavailable — see log" if open_failed else "no audio captured"',
-        '                "no audio captured"',
+        "            elif open_failed:\n",
+        "            elif False:\n",
+    ),
+    # A device call that never returns (CoreAudio deadlock, seen 5 Nov 2026) must
+    # restart the engine, non-zero so launchd brings it back, and say so.
+    (
+        "audio/stuck-device-call-is-watched",
+        "engine/audio.py",
+        "        _LIVE_RECORDERS.add(self)\n        _ensure_watchdog()",
+        "        _LIVE_RECORDERS.add(self)",
+    ),
+    (
+        "audio/stuck-restart-is-a-failure-exit",
+        "engine/audio.py",
+        "                _restart_engine(1)",
+        "                _restart_engine(0)",
+    ),
+    (
+        "audio/press-behind-stuck-mic-says-stuck",
+        "engine/audio.py",
+        "            if self._wedged:\n",
+        "            if False:\n",
     ),
     # ---- snippets: expansions must fire only when you meant them ----------
     # The internals below are useless if the call is not in the pipeline at all —
