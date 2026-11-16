@@ -20,8 +20,10 @@ So the hotkey path only ever flips flags and hands the device work to the audio
 thread. Whatever CoreAudio does with that work — answer in 5ms, or wedge for
 two seconds while a device switches — costs at most one dictation.
 """
+import os
 import queue
 import threading
+import time
 import weakref
 
 import numpy as np
@@ -149,6 +151,61 @@ _WORKER_IDLE_POLL_SEC = 1.0
 _LIVE_RECORDERS: "weakref.WeakSet[Recorder]" = weakref.WeakSet()
 
 
+# A device call running longer than this is stuck, not slow. Seen for real: a
+# close deadlocked inside CoreAudio (two of Apple's locks taken in opposite orders
+# by our thread and its IO thread) and never returned. Those locks cannot be
+# released from inside the process, so the watchdog exits and launchd restarts a
+# clean one. Generous on purpose: an AirPods open can legitimately take seconds,
+# and restarting mid-connect would kill a press that was about to work.
+# ponytail: a guess, not measured — the log has no per-call timings. Log open
+# durations if a real slow open ever comes close.
+DEVICE_OP_LIMIT_SEC = 10.0
+_WATCHDOG_POLL_SEC = 1.0
+
+
+def _restart_engine(code: int) -> None:
+    """Exit without cleanup. Cleanup would close the stream — the call that hangs.
+
+    Non-zero matters: the launchd job restarts only on failure, so exit 0 leaves
+    the app off. A whisper-server left behind is reaped by the next start.
+    """
+    os._exit(code)
+
+
+def _watchdog() -> None:
+    """Restart the engine if any Recorder's device call has stopped returning."""
+    while True:
+        time.sleep(_WATCHDOG_POLL_SEC)
+        for r in list(_LIVE_RECORDERS):
+            started = r._op_started
+            if started is None or r._wedged:
+                continue
+            if time.monotonic() - started > DEVICE_OP_LIMIT_SEC:
+                r._wedged = True
+                print(
+                    f"[simo] a microphone call has not returned for over "
+                    f"{DEVICE_OP_LIMIT_SEC:.0f}s — CoreAudio is deadlocked and the "
+                    "mic cannot recover in this process; restarting the engine",
+                    flush=True,
+                )
+                _restart_engine(1)
+
+
+# One for the whole process, started with the first Recorder. Never on the hotkey
+# path, and never touches the device itself, so it cannot be caught by the hang
+# it watches for.
+_watchdog_started = False
+_watchdog_lock = threading.Lock()
+
+
+def _ensure_watchdog() -> None:
+    global _watchdog_started
+    with _watchdog_lock:
+        if not _watchdog_started:
+            threading.Thread(target=_watchdog, daemon=True, name="simo-audio-watchdog").start()
+            _watchdog_started = True
+
+
 def drain_all() -> bool:
     """Wait for every live Recorder to finish its queued device work."""
     return all(r._drain_audio_ops(timeout=5.0) for r in list(_LIVE_RECORDERS))
@@ -174,12 +231,21 @@ def _audio_worker(recorder_ref: "weakref.ref[Recorder]", work: queue.Queue) -> N
             if recorder_ref() is None:
                 return  # nobody owns us any more, and nothing is queued
             continue
+        r = recorder_ref()
+        if r is not None:
+            r._op_started = time.monotonic()  # what the watchdog times
+        del r  # holding it across the idle wait would keep the Recorder alive
         try:
             op()
         except Exception as e:
             # Never let one bad operation kill this thread: it would leave the app
             # unable to record for the rest of the session, silently.
             print(f"[simo] audio operation failed: {type(e).__name__}: {e}", flush=True)
+        finally:
+            r = recorder_ref()
+            if r is not None:
+                r._op_started = None
+            del r
 
 
 class Recorder:
@@ -194,6 +260,8 @@ class Recorder:
         self._open_failed = False  # the mic never opened, as opposed to hearing nothing
         self._device_id: int | None = None  # input device of the last successful open
         self.on_stream_lost = None  # retained for API compatibility; unused on-demand
+        self._op_started: float | None = None  # when the running device call began
+        self._wedged = False  # a device call never returned; the engine is restarting
         # Bumped by every begin(). A device open runs on another thread and can
         # take seconds when it has to retry, by which time the user may have
         # pressed fn again — so its result is only allowed to touch recorder state
@@ -216,6 +284,7 @@ class Recorder:
             name="simo-audio",
         ).start()
         _LIVE_RECORDERS.add(self)
+        _ensure_watchdog()
 
     def _drain_audio_ops(self, timeout: float = 5.0) -> bool:
         """Wait for queued device work to finish. False if it didn't in time.
@@ -412,9 +481,12 @@ class Recorder:
         self.level = 0.0  # drop the meter now, not whenever CoreAudio answers
         self.reject_reason = ""
         if not chunks:
-            self.reject_reason = (
-                "microphone unavailable — see log" if open_failed else "no audio captured"
-            )
+            if self._wedged:
+                self.reject_reason = "microphone stuck in CoreAudio — restarting"
+            elif open_failed:
+                self.reject_reason = "microphone unavailable — see log"
+            else:
+                self.reject_reason = "no audio captured"
             return None
         samples = np.concatenate(chunks)
         # Exactly zero is not quiet — it is a microphone that opened, reported

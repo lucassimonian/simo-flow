@@ -4,6 +4,17 @@ All notable changes to Simo Flow are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed — the microphone could stay dead until you restarted the app
+
+A mic close could deadlock inside macOS's audio system and never return. Every
+press after it captured nothing and reported "no audio captured", with no way
+back short of a manual restart. Simo Flow now notices a mic call that has not
+returned within 10 seconds, says so in the log, and restarts itself; dictation
+works again a few seconds later. A press caught behind the stuck call now
+reports "microphone stuck" instead of blaming silence.
+
 ## [2.3.1] — 2026-10-09
 
 Your words are never lost, and they no longer linger anywhere you didn't put them.

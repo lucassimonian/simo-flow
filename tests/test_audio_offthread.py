@@ -286,3 +286,90 @@ def test_a_microphone_that_never_opens_is_reported_not_silently_swallowed(rec, m
         f"a mic that never opened was reported as {rec.reject_reason!r} — the user "
         f"cannot tell a broken mic from having said nothing"
     )
+
+
+# ---- a device call that never returns -------------------------------------
+#
+# Seen for real on 5 Nov 2026: one close never came back. `sample` of the engine
+# showed a lock-order deadlock inside CoreAudio — the audio thread in
+# AudioOutputUnitStop waiting on the device's IO mutex, CoreAudio's IO thread
+# holding it while inside PortAudio's startStopCallback, waiting on the audio
+# unit's mutex. Neither ever lets go. Every later open queued behind it, so each
+# press reported "no audio captured" and nothing recovered until a manual
+# restart. Those locks cannot be released from inside the process, so the only
+# honest recovery is to exit non-zero and let launchd start a clean one.
+
+
+@pytest.fixture
+def stuck_close(rec, monkeypatch):
+    """A close that blocks until the test ends, then lets go.
+
+    Released on teardown so conftest's drain still passes. Requested after
+    `rec`, so it is torn down before the drain that would otherwise wait on it.
+    """
+    release = threading.Event()
+    monkeypatch.setattr(rec, "_close_stream", lambda: release.wait())
+    yield
+    release.set()
+
+
+@pytest.fixture
+def restarts(monkeypatch):
+    """Capture the restart instead of killing the test run."""
+    codes: list[int] = []
+    monkeypatch.setattr(audio, "DEVICE_OP_LIMIT_SEC", 0.2)
+    monkeypatch.setattr(audio, "_WATCHDOG_POLL_SEC", 0.05)
+    monkeypatch.setattr(audio, "_restart_engine", codes.append)
+    return codes
+
+
+def _wait_for(predicate, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_device_call_that_never_returns_restarts_the_engine(rec, stuck_close, restarts):
+    rec.begin()
+    _feed(rec, 1.0)
+    rec.end()  # queues the close that never comes back
+
+    assert _wait_for(lambda: restarts), (
+        "a device call hung and nothing restarted the engine — every later press "
+        "reports 'no audio captured' until someone restarts it by hand"
+    )
+    assert restarts[0] != 0, "exit 0 is a clean quit to launchd, which then leaves the app off"
+
+
+def test_a_press_behind_a_stuck_device_says_so(rec, stuck_close, restarts):
+    rec.begin()
+    _feed(rec, 1.0)
+    rec.end()
+    assert _wait_for(lambda: restarts)
+
+    rec.begin()  # the user tries again; this open is queued behind the stuck close
+    assert rec.end() is None
+    assert "stuck" in rec.reject_reason, (
+        f"reported as {rec.reject_reason!r} — the log must say the mic is stuck, "
+        f"not that nothing was heard"
+    )
+
+
+def test_a_slow_device_call_that_finishes_does_not_restart(rec, monkeypatch, restarts):
+    """AirPods connecting is slow, not stuck. Restarting then would kill a good press."""
+    slow_open, started, finished = _wedge(0.1)  # under the 0.2s limit
+    monkeypatch.setattr(rec, "_open_stream", slow_open)
+
+    rec.begin()
+    assert finished.wait(1.0)
+    time.sleep(0.3)  # several watchdog polls after it finished
+
+    assert restarts == [], "a device call that finished was treated as stuck"
+
+
+def test_an_idle_recorder_never_restarts(rec, restarts):
+    time.sleep(0.4)
+    assert restarts == [], "nothing was running, yet the watchdog fired"

@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false  # knowing it breaks on exactly one version is the point
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-15, macos-26]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,14 +84,14 @@ jobs:
       # mutation, and the guards it checks are not OS-specific. Running it on all
       # three would triple the slowest step in CI to re-prove the same thing.
       - name: Mutation sweep — prove each guard is actually tested
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: python tools/mutation_sweep.py
 
       # The local DB and log hold the plaintext of everything ever dictated, so a
       # leaked credential in this repo would matter more than most. One runner is
       # enough — git history is the same on all of them.
       - name: Secret scan
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           brew install gitleaks
           gitleaks detect --redact --no-banner --exit-code 1
@@ -100,7 +100,7 @@ jobs:
       # installed set against the Python advisory database on every push, so a
       # known CVE in a transitive dependency surfaces here rather than never.
       - name: Audit dependencies for known vulnerabilities
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           pip install pip-audit
           pip-audit --strict --desc
