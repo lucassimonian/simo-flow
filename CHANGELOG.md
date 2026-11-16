@@ -6,6 +6,14 @@ All notable changes to Simo Flow are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — a problem that keeps happening now tells you
+
+Three dictations in a row that capture nothing, or the fn key losing its
+permissions, now post one macOS notification saying what is wrong. Before,
+each failure flashed for under two seconds or showed a small menu-bar warning
+that was easy to miss for hours. Stray taps never count, and a successful
+dictation resets the count.
+
 ### Fixed — the microphone could stay dead until you restarted the app
 
 A mic close could deadlock inside macOS's audio system and never return. Every
