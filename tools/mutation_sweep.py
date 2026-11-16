@@ -347,6 +347,43 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "            if self._wedged:\n",
         "            if False:\n",
     ),
+    # ---- repeated failures reach the user once, and only once -------------
+    (
+        "main/refusal-alert-fires-once",
+        "engine/__main__.py",
+        "        if self._refusals_in_a_row == REFUSALS_BEFORE_ALERT:",
+        "        if self._refusals_in_a_row >= REFUSALS_BEFORE_ALERT:",
+    ),
+    (
+        "main/success-resets-refusal-run",
+        "engine/__main__.py",
+        "        self._refusals_in_a_row = 0\n\n    def _worker",
+        "        pass\n\n    def _worker",
+    ),
+    (
+        "main/stray-taps-never-alert",
+        "engine/__main__.py",
+        '        if reason == "too short":\n            return\n        self._refusals_in_a_row',
+        '        if False:\n            return\n        self._refusals_in_a_row',
+    ),
+    (
+        "main/permission-alert-once-per-loss",
+        "engine/__main__.py",
+        "        if not self._warned_permission:",
+        "        if True:",
+    ),
+    (
+        "main/permission-alert-rearms",
+        "engine/__main__.py",
+        "    def _hotkey_ready(self) -> None:\n        self._warned_permission = False",
+        "    def _hotkey_ready(self) -> None:\n        pass",
+    ),
+    (
+        "main/notification-text-is-data",
+        "engine/__main__.py",
+        """'display notification (item 1 of argv) with title "Simo Flow"'""",
+        """'display notification "' + text + '" with title "Simo Flow"'""",
+    ),
     # ---- snippets: expansions must fire only when you meant them ----------
     # The internals below are useless if the call is not in the pipeline at all —
     # the feature could be silently disconnected with every snippets test green.

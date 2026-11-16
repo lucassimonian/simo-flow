@@ -1421,3 +1421,80 @@ def test_the_clipboard_tells_clipboard_managers_not_to_keep_a_dictation(monkeypa
     assert "org.nspasteboard.TransientType" in types
     assert "org.nspasteboard.ConcealedType" in types
     assert ("set", inject_mod.NSPasteboardTypeString, "dictated text") in calls
+
+
+# ---- problems that repeat must reach the user, not just the log -------------
+#
+# A refused press flashes on the pill for 1.6s and a lost permission shows a
+# small ⚠️ in the menu bar. Both are easy to miss: the log holds ~45 hours of
+# "fn listener needs permissions" retries nobody saw. Something that keeps
+# failing gets one macOS notification, once, not one per press or per retry.
+
+
+class _AlertBare:
+    def __init__(self):
+        self._refusals_in_a_row = 0
+        self._warned_permission = False
+        self.title = ""
+        self.status_item = type("Item", (), {"title": "", "set_callback": lambda s, cb: None})()
+        self._open_privacy = lambda _item: None
+
+
+def _alerts(monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr(_mainmod(), "notify", sent.append)
+    return sent
+
+
+def test_three_refused_presses_in_a_row_raise_one_alert(monkeypatch):
+    sent = _alerts(monkeypatch)
+    app = _AlertBare()
+    for _ in range(5):
+        _mainmod().SimoFlow._count_refusal(app, "no audio captured")
+    assert len(sent) == 1, f"expected one alert for a run of failures, got {len(sent)}"
+    assert "no audio captured" in sent[0], "the alert must say what went wrong"
+
+
+def test_a_successful_dictation_resets_the_run(monkeypatch):
+    sent = _alerts(monkeypatch)
+    app = _AlertBare()
+    m = _mainmod()
+    for _ in range(2):
+        m.SimoFlow._count_refusal(app, "no audio captured")
+    m.SimoFlow._count_success(app)
+    for _ in range(2):
+        m.SimoFlow._count_refusal(app, "no audio captured")
+    assert sent == [], "two failures either side of a success are not a broken mic"
+
+
+def test_accidental_taps_never_raise_an_alert(monkeypatch):
+    sent = _alerts(monkeypatch)
+    app = _AlertBare()
+    for _ in range(10):
+        _mainmod().SimoFlow._count_refusal(app, "too short")
+    assert sent == [], "stray taps on fn are normal and must not alarm anyone"
+
+
+def test_lost_permission_alerts_once_not_every_retry(monkeypatch):
+    sent = _alerts(monkeypatch)
+    app = _AlertBare()
+    m = _mainmod()
+    for _ in range(20):  # the listener retries every 3s
+        m.SimoFlow._hotkey_needs_permission(app)
+    assert len(sent) == 1, f"one loss of permission sent {len(sent)} alerts"
+    m.SimoFlow._hotkey_ready(app)
+    m.SimoFlow._hotkey_needs_permission(app)
+    assert len(sent) == 2, "losing permission a second time must alert again"
+
+
+def test_notify_passes_text_as_data_not_as_script(monkeypatch):
+    """Dictated words can reach an alert; they must never be run as AppleScript."""
+    import subprocess
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **k: calls.append(args))
+    evil = 'x" & (do shell script "touch /tmp/pwned") & "'
+    _mainmod().notify(evil)
+    assert calls, "notify sent nothing"
+    assert calls[0][-1] == evil, "the message must be the last argv item, untouched"
+    assert all(evil not in a for a in calls[0][:-1]), "the message leaked into the script"

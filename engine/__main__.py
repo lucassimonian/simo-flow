@@ -28,6 +28,35 @@ WARM_PING_SEC = 240  # re-warm the LLM every 4min (Ollama keep_alive is 30m, but
 JUNK_TRANSCRIPTS = {"[end of transcript]", "[blank_audio]", "[ inaudible ]", "(silence)", ""}
 
 READY_STATUS = "Ready — hold fn to dictate"
+# Refused presses in a row before a notification. One or two is a stray tap or a
+# quiet word; three in a row has, in this log, always been a broken mic.
+REFUSALS_BEFORE_ALERT = 3
+
+
+def notify(text: str) -> None:
+    """Post a macOS notification. Never blocks, never raises.
+
+    osascript rather than rumps.notification: the engine runs as `python -m
+    engine`, not a signed bundle, and the notification centre refuses a process
+    without one. The message travels as argv, never inside the script, because
+    it can carry dictated words and must not be run as AppleScript.
+    """
+    import subprocess
+
+    try:
+        subprocess.Popen(
+            [
+                "osascript",
+                "-e", "on run argv",
+                "-e", 'display notification (item 1 of argv) with title "Simo Flow"',
+                "-e", "end run",
+                text,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        print(f"[simo] could not post a notification ({e}): {text}", flush=True)
 
 
 class SimoFlow(rumps.App):
@@ -78,6 +107,8 @@ class SimoFlow(rumps.App):
         self._fn_down = False  # fn physically held right now (see _claim_utterance)
         self._focus: dict | None = None  # window focused when recording started
         self._meter: rumps.Timer | None = None
+        self._refusals_in_a_row = 0  # see _count_refusal
+        self._warned_permission = False  # one alert per loss, not per 3s retry
         # one worker drains this queue, so pipelines never overlap and can't race
         # each other on the single system clipboard (would paste wrong text)
         self._work: queue.Queue = queue.Queue()
@@ -165,11 +196,15 @@ class SimoFlow(rumps.App):
 
     def _hotkey_needs_permission(self) -> None:
         """Main thread: the menu bar cannot be touched from the hotkey thread."""
+        if not self._warned_permission:
+            self._warned_permission = True
+            notify("The fn key is off: grant Input Monitoring and Accessibility in System Settings.")
         self.title = "⚠️"
         self.status_item.title = "Grant Input Monitoring + Accessibility…"
         self.status_item.set_callback(self._open_privacy)
 
     def _hotkey_ready(self) -> None:
+        self._warned_permission = False
         self.status_item.title = READY_STATUS
         self.status_item.set_callback(None)
         self.title = IDLE_TITLE
@@ -409,6 +444,7 @@ class SimoFlow(rumps.App):
                 f"(device={audio.default_input_name()})",
                 flush=True,
             )
+            self._count_refusal(reason)
             if reason != "too short":  # a stray tap isn't worth a message
                 self.pill.flash(reason)
             else:
@@ -421,6 +457,19 @@ class SimoFlow(rumps.App):
         # user has already moved on, and it needs where they *were*.
         self._work.put((samples, self._focus))
         self._focus = None
+
+    def _count_refusal(self, reason: str) -> None:
+        """Alert once when presses keep failing. A stray tap is not a failure."""
+        if reason == "too short":
+            return
+        self._refusals_in_a_row += 1
+        if self._refusals_in_a_row == REFUSALS_BEFORE_ALERT:
+            notify(f"{REFUSALS_BEFORE_ALERT} dictations in a row captured nothing: {reason}")
+
+    def _count_success(self) -> None:
+        # ponytail: written from the pipeline thread, read on the main runloop.
+        # A lost update can only delay one alert by one press; a lock buys nothing.
+        self._refusals_in_a_row = 0
 
     def _worker(self) -> None:
         """Single background thread: one utterance processed at a time, in
@@ -473,6 +522,7 @@ class SimoFlow(rumps.App):
                 return
             # Lengths, not text: see invariant 10 in AGENTS.md.
             print(f"[simo] {dt:.0f}ms exact={self.exact_mode} raw={len(raw)} chars pasted={len(cleaned)} chars", flush=True)
+            self._count_success()
             self.pill.hide()
         except Exception as e:  # never crash the app on one bad utterance
             print(f"[simo] pipeline error: {e}", flush=True)
