@@ -21,7 +21,7 @@ be loud.
 | Lint | Zero errors | `ruff check .` | every change |
 | Types | Zero errors across 11 files | `mypy engine/ --ignore-missing-imports` | every change |
 | Tests | , zero failures | `pytest tests/ --ignore=tests/test_pipeline.py` | every change |
-| Guards are real | **67 of 67** safety guards fail a test when broken | `tools/mutation_sweep.py` | before a release, and CI |
+| Guards are real | **73 of 73** safety guards fail a test when broken | `tools/mutation_sweep.py` | before a release, and CI |
 | Nothing destroys a user's clipboard | The pasteboard guard in `engine/inject.py` stays live | covered by the sweep above | every change |
 
 Every row names a command. A row without one is an aspiration, not a constraint.
