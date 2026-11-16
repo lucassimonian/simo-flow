@@ -402,6 +402,10 @@ def test_a_junk_transcript_is_never_pasted(junk, tmp_path, monkeypatch):
     class Bare:
         exact_mode = False
         pill = BarePill()
+        _refusals_in_a_row = 0
+
+        def _count_success(self):
+            self._refusals_in_a_row = 0
 
         def _ui_title(self, _t):
             pass
@@ -688,6 +692,10 @@ def test_a_failed_paste_still_records_the_dictation(monkeypatch, tmp_path):
     class Bare:
         exact_mode = False
         pill = BarePill()
+        _refusals_in_a_row = 0
+
+        def _count_success(self):
+            self._refusals_in_a_row = 0
 
         def _ui_title(self, _t):
             pass
@@ -800,6 +808,10 @@ def test_snippets_are_expanded_during_a_real_dictation(tmp_path, monkeypatch):
     class Bare:
         exact_mode = False
         pill = BarePill()
+        _refusals_in_a_row = 0
+
+        def _count_success(self):
+            self._refusals_in_a_row = 0
 
         def _ui_title(self, _t):
             pass
@@ -1268,6 +1280,10 @@ def _pipeline_parts(monkeypatch, tmp_path, said="the words I actually said"):
     class Bare:
         exact_mode = False
         pill = BarePill()
+        _refusals_in_a_row = 0
+
+        def _count_success(self):
+            self._refusals_in_a_row = 0
 
         def _ui_title(self, _t):
             pass
@@ -1498,3 +1514,19 @@ def test_notify_passes_text_as_data_not_as_script(monkeypatch):
     assert calls, "notify sent nothing"
     assert calls[0][-1] == evil, "the message must be the last argv item, untouched"
     assert all(evil not in a for a in calls[0][:-1]), "the message leaked into the script"
+
+
+def test_a_successful_dictation_logs_no_pipeline_error(monkeypatch, tmp_path, capsys):
+    """The pipeline catches every exception so one bad utterance never kills the
+    app. The cost is that a broken success path still "passes": four test
+    doubles lacked a method added to the app, and every success printed a
+    pipeline error nobody saw. A clean run must print none."""
+    import numpy as np
+
+    import engine.inject as inject_mod
+
+    _store, bare = _pipeline_parts(monkeypatch, tmp_path)
+    monkeypatch.setattr(inject_mod, "paste_text", lambda *a, **k: True)
+    _mainmod().SimoFlow._run_pipeline(bare, np.zeros(16000, dtype=np.float32), None)
+    out = capsys.readouterr().out
+    assert "pipeline error" not in out, out
