@@ -482,6 +482,7 @@ class SimoFlow(rumps.App):
         t0 = time.time()
         try:
             raw = stt.transcribe(samples, initial_prompt=store.dictionary_prompt())
+            stt_ms = (time.time() - t0) * 1000
             if not raw or raw.strip().lower() in JUNK_TRANSCRIPTS:
                 # whisper emits these on silence/noise — never paste them
                 self.pill.flash("no speech detected")
@@ -492,6 +493,7 @@ class SimoFlow(rumps.App):
             # snippet lookup or the paste itself lost what was said; only a
             # refused paste had been covered. The row is completed below.
             row = store.log_dictation(raw, raw, 0, audio_sec=len(samples) / 16000)
+            t_polish = time.time()
             if self.exact_mode:
                 cleaned = raw
             else:
@@ -500,6 +502,7 @@ class SimoFlow(rumps.App):
                 if polish.needs_cleanup(raw):
                     self.pill.busy("Polishing")
                 cleaned = polish.polish(raw)
+            polish_ms = (time.time() - t_polish) * 1000
             # After polish, never inside it. polish() guarantees its output is
             # your own words with fillers removed; a snippet deliberately inserts
             # words you did not say, so expanding earlier would either be thrown
@@ -521,7 +524,7 @@ class SimoFlow(rumps.App):
                 self._ui_title(IDLE_TITLE)
                 return
             # Lengths, not text: see invariant 10 in AGENTS.md.
-            print(f"[simo] {dt:.0f}ms exact={self.exact_mode} raw={len(raw)} chars pasted={len(cleaned)} chars", flush=True)
+            print(f"[simo] {dt:.0f}ms exact={self.exact_mode} raw={len(raw)} chars pasted={len(cleaned)} chars stt={stt_ms:.0f}ms polish={polish_ms:.0f}ms", flush=True)
             self._count_success()
             self.pill.hide()
         except Exception as e:  # never crash the app on one bad utterance

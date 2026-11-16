@@ -1530,3 +1530,32 @@ def test_a_successful_dictation_logs_no_pipeline_error(monkeypatch, tmp_path, ca
     _mainmod().SimoFlow._run_pipeline(bare, np.zeros(16000, dtype=np.float32), None)
     out = capsys.readouterr().out
     assert "pipeline error" not in out, out
+
+
+def test_the_log_line_says_where_the_wait_went(monkeypatch, tmp_path, capsys):
+    """The log had only the total, so a 34s dictation could not be explained:
+    was it whisper, the cleanup model, or the paste? Each stage is now timed on
+    the same line, as numbers only (never text, see AGENTS.md invariant 10)."""
+    import re
+    import time as _time
+
+    import numpy as np
+
+    import engine.inject as inject_mod
+    import engine.polish as polish_mod
+    import engine.stt as stt_mod
+
+    _store, bare = _pipeline_parts(monkeypatch, tmp_path)
+    monkeypatch.setattr(stt_mod, "transcribe", lambda *a, **k: (_time.sleep(0.05), "the words")[1])
+    monkeypatch.setattr(polish_mod, "polish", lambda t, *a, **k: (_time.sleep(0.3), t)[1])
+    monkeypatch.setattr(inject_mod, "paste_text", lambda *a, **k: True)
+    _mainmod().SimoFlow._run_pipeline(bare, np.zeros(16000, dtype=np.float32), None)
+
+    line = next(l for l in capsys.readouterr().out.splitlines() if "ms exact=" in l)
+    stt_ms = int(re.search(r"stt=(\d+)ms", line).group(1))
+    polish_ms = int(re.search(r"polish=(\d+)ms", line).group(1))
+    # Lower bounds only, plus one generous ceiling: a slow CI runner can stretch
+    # a sleep but never shorten it, so nothing here can go flaky.
+    assert stt_ms >= 50, f"whisper's time misreported: {line}"
+    assert polish_ms >= 300, f"polish's time misreported: {line}"
+    assert stt_ms < 300, f"whisper was charged for polish's time: {line}"
